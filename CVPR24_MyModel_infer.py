@@ -539,13 +539,13 @@ def my_model_infer_npz_3D(img_npz_file):
     for idx, box3D in enumerate(boxes_3D, start=1):
         segs_3d_temp = np.zeros_like(img_3D, dtype=np.uint8) 
         x_min, y_min, z_min, x_max, y_max, z_max = box3D
-        assert z_min < z_max, f"z_min should be smaller than z_max, but got {z_min=} and {z_max=}"
+        assert z_min <= z_max, f"z_min should be smaller than z_max, but got {z_min=} and {z_max=}"
         mid_slice_bbox_2d = np.array([x_min, y_min, x_max, y_max])
         z_middle = int((z_max - z_min)/2 + z_min)
 
         # infer from middle slice to the z_max
         # print(npz_name, 'infer from middle slice to the z_max')
-        for z in range(z_middle, z_max):
+        for z in range(z_middle, max(z_max, z_middle+1)):
             img_2d = img_3D[z, :, :]
             if len(img_2d.shape) == 2:
                 img_3c = np.repeat(img_2d[:, :, None], 3, axis=-1)
@@ -559,7 +559,7 @@ def my_model_infer_npz_3D(img_npz_file):
             if not args.grabcut:
                 img_256 = (img_256 - img_256.min()) / np.clip(
                     img_256.max() - img_256.min(), a_min=1e-8, a_max=None
-                )  # normalize to [0, 1], (H, W, 3)
+                )  # normalize to [0, 1], (H, W, 3)s
             ## Pad image to 256x256
             img_256 = pad_image(img_256)
             
@@ -654,15 +654,15 @@ def my_model_infer_npz_3D(img_npz_file):
                 show_box(box_viz, ax[1], edgecolor=color)
                 show_mask(segs[idx]==i, ax[1], mask_color=color)
 
-                plt.tight_layout()
-                plt.savefig(join(png_save_dir, npz_name.split(".")[0] + '.png'), dpi=300)
-                plt.close()
+        plt.tight_layout()
+        plt.savefig(join(png_save_dir, npz_name.split(".")[0] + '.png'), dpi=300)
+        plt.close()
 
 
 if __name__ == '__main__':
     img_npz_files = sorted(glob(join(data_root, '*.npz'), recursive=True))
     all_files = len(img_npz_files)
-    already_computed = [el for el in os.listdir(pred_save_dir) if 'npz' in el]
+    already_computed = [el for el in os.listdir(pred_save_dir) if 'npz' in el][:-1] # omit last ones
     img_npz_files = [el for el in img_npz_files if el.split('/')[-1] not in already_computed]
     print(all_files - len(img_npz_files), f'files have already been computed. Predicting for the rest of the {len(img_npz_files)} files...')
     efficiency = OrderedDict()
