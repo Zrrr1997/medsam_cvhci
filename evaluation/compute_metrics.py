@@ -28,6 +28,7 @@ def compute_multi_class_nsd(gt, seg, spacing, tolerance=2.0):
             gt_i, seg_i, spacing_mm=spacing
         )
         nsd.append(compute_surface_dice_at_tolerance(surface_distance, tolerance))
+    print(np.mean(nsd))
     return np.mean(nsd)
 
 

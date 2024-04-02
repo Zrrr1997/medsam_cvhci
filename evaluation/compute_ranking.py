@@ -26,14 +26,14 @@ if __name__ == '__main__':
     assert len(df_time_2) == len(df_time_1)
     assert len(df_metrics_1) == len(df_metrics_2)
 
-    time_ranking = (df_time_1['time'] > df_time_2['time']) * 1 
+    time_ranking = (df_time_1['time'] >= df_time_2['time']) * 1 
 
     time_ranking = time_ranking.to_numpy()
 
-    dsc_ranking = (df_metrics_1['dsc'] < df_metrics_2['dsc']) * 1
+    dsc_ranking = (df_metrics_1['dsc'] <= df_metrics_2['dsc']) * 1
     dsc_ranking = dsc_ranking.to_numpy()
 
-    nsd_ranking = (df_metrics_1['nsd'] > df_metrics_2['nsd']) * 1   
+    nsd_ranking = (df_metrics_1['nsd'] >= df_metrics_2['nsd']) * 1   
     nsd_ranking = nsd_ranking.to_numpy()
     time, dsc, nsd = np.mean(time_ranking), np.mean(dsc_ranking), np.mean(nsd_ranking)
     print(time, dsc, nsd)
