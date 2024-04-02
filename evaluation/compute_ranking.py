@@ -16,9 +16,13 @@ if __name__ == '__main__':
     df_metrics_1 = pd.read_csv(os.path.join(csv_1, 'metrics.csv'))
     df_time_1 = pd.read_csv(os.path.join(csv_1, 'efficiency.csv'))
 
+
+
     df_metrics_2 = pd.read_csv(os.path.join(csv_2, 'metrics.csv'))
     df_time_2 = pd.read_csv(os.path.join(csv_2, 'efficiency.csv'))
 
+    df_metrics_1.loc[(df_metrics_1['nsd'] == 0) & (df_metrics_1['dsc'] <= 0.2), 'nsd'] = 1000
+    df_metrics_2.loc[(df_metrics_2['nsd'] == 0) & (df_metrics_2['dsc'] <= 0.2), 'nsd'] = 1000
     assert len(df_time_2) == len(df_time_1)
     assert len(df_metrics_1) == len(df_metrics_2)
 
@@ -29,7 +33,7 @@ if __name__ == '__main__':
     dsc_ranking = (df_metrics_1['dsc'] < df_metrics_2['dsc']) * 1
     dsc_ranking = dsc_ranking.to_numpy()
 
-    nsd_ranking = (df_metrics_1['nsd'] > df_metrics_2['nsd']) * 1 
+    nsd_ranking = (df_metrics_1['nsd'] > df_metrics_2['nsd']) * 1   
     nsd_ranking = nsd_ranking.to_numpy()
     time, dsc, nsd = np.mean(time_ranking), np.mean(dsc_ranking), np.mean(nsd_ranking)
     print(time, dsc, nsd)

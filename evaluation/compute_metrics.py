@@ -71,7 +71,7 @@ def compute_metrics(npz_name):
                 spacing = [1.0, 1.0, 1.0]
                 nsd = compute_multi_class_nsd(np.expand_dims(gts, -1), np.expand_dims(segs, -1), spacing)
         else:
-            nsd = 0.0
+            nsd = 10000.0 # Assume model performs poor on this sample
     return npz_name, dsc, nsd
 
 if __name__ == '__main__':
