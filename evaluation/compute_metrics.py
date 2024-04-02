@@ -54,7 +54,7 @@ def compute_metrics(npz_name):
         metric_dict['nsd'] = -1.
     npz_seg = np.load(join(seg_dir, npz_name), allow_pickle=True, mmap_mode='r')
     npz_gt = np.load(join(gt_dir, npz_name), allow_pickle=True, mmap_mode='r')
-    #gts = npz_gt['gts']
+    gts = npz_gt['gts']
     #if 255 in gts:
     gts = cc3d.connected_components((gts > 0) * 1, connectivity=26) # solves the weird GTs with [0, 2] labels
 
