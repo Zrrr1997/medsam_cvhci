@@ -12,11 +12,11 @@ csv_1 = args.csv_1
 csv_2 = args.csv_2
 
 if __name__ == '__main__':
-    df_metrics_1 = pd.from_csv(os.path.join(csv_1, 'metrics.csv'))
-    df_time_1 = pd.from_csv(os.path.join(csv_1, 'efficiency.csv'))
+    df_metrics_1 = pd.read_csv(os.path.join(csv_1, 'metrics.csv'))
+    df_time_1 = pd.read_csv(os.path.join(csv_1, 'efficiency.csv'))
 
-    df_metrics_2 = pd.from_csv(os.path.join(csv_2, 'metrics.csv'))
-    df_time_2 = pd.from_csv(os.path.join(csv_2, 'efficiency.csv'))
+    df_metrics_2 = pd.read_csv(os.path.join(csv_2, 'metrics.csv'))
+    df_time_2 = pd.read_csv(os.path.join(csv_2, 'efficiency.csv'))
 
     print(len(df_time_2))
     print(len(df_time_1))
