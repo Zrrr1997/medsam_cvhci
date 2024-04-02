@@ -58,12 +58,12 @@ def compute_metrics(npz_name):
     #if 255 in gts:
     gts = cc3d.connected_components((gts > 0) * 1, connectivity=26) # solves the weird GTs with [0, 2] labels
 
+
     segs = npz_seg['segs']
 
     if npz_name.startswith('3D') or npz_name.startswith('CT') or npz_name.startswith('MR') or npz_name.startswith('PET'):
         spacing = npz_gt['spacing']
     dsc = compute_multi_class_dsc(gts, segs)
-    print(np.unique(gts), np.unique(segs))
     # comupute nsd
     if compute_NSD:
         if dsc > 0.2:
