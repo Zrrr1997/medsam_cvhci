@@ -28,7 +28,6 @@ def compute_multi_class_nsd(gt, seg, spacing, tolerance=2.0):
             gt_i, seg_i, spacing_mm=spacing
         )
         nsd.append(compute_surface_dice_at_tolerance(surface_distance, tolerance))
-    print(np.mean(nsd))
     return np.mean(nsd)
 
 
@@ -68,11 +67,12 @@ def compute_metrics(npz_name):
         # only compute nsd when dice > 0.2 because NSD is also low when dice is too low
             if npz_name.startswith('3D') or npz_name.startswith('CT') or npz_name.startswith('MR') or npz_name.startswith('PET'):
                 nsd = compute_multi_class_nsd(gts, segs, spacing)
+                
             else:
                 spacing = [1.0, 1.0, 1.0]
                 nsd = compute_multi_class_nsd(np.expand_dims(gts, -1), np.expand_dims(segs, -1), spacing)
         else:
-            nsd = 10000.0 # Assume model performs poor on this sample
+            nsd = 0.0 # Assume model performs poor on this sample
     return npz_name, dsc, nsd
 
 if __name__ == '__main__':
