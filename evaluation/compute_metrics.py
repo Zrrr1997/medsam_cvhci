@@ -91,7 +91,7 @@ if __name__ == '__main__':
     npz_names = [npz_name for npz_name in npz_names if npz_name.endswith('.npz')]
     npz_names_seg = [npz_name for npz_name in npz_names_seg if npz_name.endswith('.npz')]
 
-    if len(npz_names_seg) + len(npz_names):
+    if len(npz_names_seg) < len(npz_names):
         print(f'[WARNING] Prediction dir {seg_dir} is incomplete with {len(npz_names_seg)} predictions from {len(npz_names)} labels...')
         npz_names = npz_names_seg
 
