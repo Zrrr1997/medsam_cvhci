@@ -21,8 +21,7 @@ if __name__ == '__main__':
     df_metrics_2 = pd.read_csv(os.path.join(csv_2, 'metrics.csv'))
     df_time_2 = pd.read_csv(os.path.join(csv_2, 'efficiency.csv'))
 
-    df_metrics_1.loc[(df_metrics_1['nsd'] == 0) & (df_metrics_1['dsc'] <= 0.2), 'nsd'] = 1000
-    df_metrics_2.loc[(df_metrics_2['nsd'] == 0) & (df_metrics_2['dsc'] <= 0.2), 'nsd'] = 1000
+
     assert len(df_time_2) == len(df_time_1)
     assert len(df_metrics_1) == len(df_metrics_2)
 
