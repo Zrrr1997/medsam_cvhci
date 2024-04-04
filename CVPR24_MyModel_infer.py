@@ -21,6 +21,8 @@ import pandas as pd
 from datetime import datetime
 import cc3d
 
+from utils.mobileunet import MobileUNet
+
 
 #%% set seeds
 torch.set_float32_matmul_precision('high')
@@ -80,6 +82,12 @@ parser.add_argument(
     default=False,
     action='store_true',
     help='Use GrabCut instead'
+)
+parser.add_argument(
+    '--mobileunet',
+    default=False,
+    action='store_true',
+    help='Use Mobile U-Net instead'
 )
 args = parser.parse_args()
 
@@ -198,6 +206,36 @@ class my_model_Lite(nn.Module):
         )
 
         return masks
+@torch.no_grad()
+def postprocess_masks(masks, new_size, original_size):
+    """
+    Do cropping and resizing
+
+    Parameters
+    ----------
+    masks : torch.Tensor
+        masks predicted by the model
+    new_size : tuple
+        the shape of the image after resizing to the longest side of 256
+    original_size : tuple
+        the original shape of the image
+
+    Returns
+    -------
+    torch.Tensor
+        the upsampled mask to the original size
+    """
+    # Crop
+    masks = masks[..., :new_size[0], :new_size[1]]
+    # Resize
+
+    masks = F.interpolate(
+        masks,
+        size=(original_size[0], original_size[1]),
+        mode="bilinear",
+        align_corners=False,
+    )
+    return masks
 
 
 def show_mask(mask, ax, mask_color=None, alpha=0.5):
@@ -327,6 +365,8 @@ def my_model_inference(my_model_model, img_embed, box_256, new_size, original_si
         multimask_output=False
     )
 
+
+
     low_res_pred = my_model_model.postprocess_masks(low_res_logits, new_size, original_size)
     low_res_pred = torch.sigmoid(low_res_pred)  
     low_res_pred = low_res_pred.squeeze().cpu().numpy()  
@@ -334,7 +374,7 @@ def my_model_inference(my_model_model, img_embed, box_256, new_size, original_si
 
     return my_model_seg, iou
 
-if not args.grabcut:
+if not args.grabcut and not args.mobileunet:
     my_model_lite_image_encoder = TinyViT(
         img_size=256,
         in_chans=3,
@@ -386,6 +426,9 @@ if not args.grabcut:
     my_model_lite_model.load_state_dict(my_model_checkpoint)
     my_model_lite_model.to(device)
     my_model_lite_model.eval()
+elif args.mobileunet:
+    my_model = MobileUNet()
+
 
 def grabcut_pred(rect, mask, image, new_size, original_size):
     fgModel = np.zeros((1, 65), dtype="float")
@@ -454,7 +497,7 @@ def my_model_infer_npz_2D(img_npz_file):
     img_256_padded = pad_image(img_256_norm, 256)
 
 
-    if not args.grabcut:
+    if not args.grabcut and not args.mobileunet:
         with torch.no_grad():
             img_256_tensor = torch.tensor(img_256_padded).float().permute(2, 0, 1).unsqueeze(0).to(device) # (B, 3, 256, 256)
 
@@ -466,6 +509,16 @@ def my_model_infer_npz_2D(img_npz_file):
 
         if args.grabcut:
             my_model_mask = grabcut_pred(box256, segs, img_256_padded_non_norm, (newh, neww), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
+
+        elif args.mobileunet:
+
+            my_model_mask = my_model(torch.Tensor(img_256_padded_non_norm.transpose(2, 1, 0)).unsqueeze(0))
+
+            low_res_pred = postprocess_masks(my_model_mask, (newh, neww), (H, W))
+            low_res_pred = torch.sigmoid(low_res_pred)  
+            low_res_pred = low_res_pred.squeeze().cpu().numpy()  
+            my_model_mask = (low_res_pred > 0.5).astype(np.uint8)
+    
 
         else:
             box256 = box256[None, ...] # (1, 4)
@@ -564,7 +617,7 @@ def my_model_infer_npz_3D(img_npz_file):
             img_256 = pad_image(img_256)
             
 
-            if not args.grabcut:
+            if not args.grabcut and not args.mobileunet:
                 # convert the shape to (3, H, W)
                 img_256_tensor = torch.tensor(img_256).float().permute(2, 0, 1).unsqueeze(0).to(device)
                 # get the image embedding
@@ -584,6 +637,12 @@ def my_model_infer_npz_3D(img_npz_file):
             if args.grabcut:
 
                 img_2d_seg = grabcut_pred(box_256.astype(np.uint8), np.zeros_like(img_256, dtype=np.uint8), img_256, (new_H, new_W), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
+            elif args.mobileunet:
+                img_2d_seg = my_model(torch.Tensor(img_256.transpose(2, 1, 0)).unsqueeze(0))
+                low_res_pred = postprocess_masks(img_2d_seg, [new_H, new_W], (H, W))
+                low_res_pred = torch.sigmoid(low_res_pred)  
+                low_res_pred = low_res_pred.squeeze().cpu().numpy()  
+                img_2d_seg = (low_res_pred > 0.5).astype(np.uint8)
             else:
                 img_2d_seg, iou_pred = my_model_inference(my_model_lite_model, image_embedding, box_256, [new_H, new_W], [H, W])
 
@@ -603,14 +662,14 @@ def my_model_infer_npz_3D(img_npz_file):
 
             img_256 = resize_longest_side(img_3c, 256)
             new_H, new_W = img_256.shape[:2]
-            if not args.grabcut:
+            if not args.grabcut and not args.mobileunet:
                 img_256 = (img_256 - img_256.min()) / np.clip(
                     img_256.max() - img_256.min(), a_min=1e-8, a_max=None
                 )  # normalize to [0, 1], (H, W, 3)
                 ## Pad image to 256x256
             img_256 = pad_image(img_256)
 
-            if not args.grabcut:
+            if not args.grabcut and not args.mobileunet:
                 img_256_tensor = torch.tensor(img_256).float().permute(2, 0, 1).unsqueeze(0).to(device)
                 # get the image embedding
                 with torch.no_grad():
@@ -626,6 +685,12 @@ def my_model_infer_npz_3D(img_npz_file):
                 box_256 = mid_slice_bbox_2d * scale_256
             if args.grabcut:
                 img_2d_seg = grabcut_pred(box_256.astype(np.uint8), np.zeros_like(img_256, dtype=np.uint8), img_256, (new_H, new_W), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
+            elif args.mobileunet:
+                img_2d_seg = my_model(torch.Tensor(img_256.transpose(2, 1, 0)).unsqueeze(0))
+                low_res_pred = postprocess_masks(img_2d_seg, [new_H, new_W], (H, W))
+                low_res_pred = torch.sigmoid(low_res_pred)  
+                low_res_pred = low_res_pred.squeeze().cpu().numpy()  
+                img_2d_seg = (low_res_pred > 0.5).astype(np.uint8)
             else:
                 img_2d_seg, iou_pred = my_model_inference(my_model_lite_model, image_embedding, box_256, [new_H, new_W], [H, W])
             segs_3d_temp[z, img_2d_seg>0] = idx
