@@ -16,6 +16,7 @@ from datetime import datetime
 
 from utils.mobileunet import MobileUNet
 
+import cc3d
 
 import cv2
 
@@ -196,6 +197,34 @@ class NpyDataset(Dataset):
         img_name = basename(self.gt_path_files[index])
         assert img_name == basename(self.gt_path_files[index]), 'img gt name error' + self.gt_path_files[index] + self.npy_files[index]
         img_3c = np.load(join(self.img_path, img_name), 'r', allow_pickle=True) # (H, W, 3)
+
+        gt = np.load(self.gt_path_files[index], 'r', allow_pickle=True) # multiple labels [0, 1,4,5...], (256,256)
+        
+        connected_components = cc3d.connected_components(gt.copy(), connectivity=26)
+
+        boxes= []
+        for label in np.unique(connected_components)[1:]:  # Skip background label 0
+
+            labeled_mask = connected_components == label
+            indices = np.nonzero(labeled_mask)
+
+            bounding_box = [min(indices[1]), min(indices[0]), max(indices[1]), max(indices[0])]  # Format: (x_min, y_min, x_max, y_max)
+            boxes.append(bounding_box)
+
+        bboxes = np.array(boxes)
+        random_ind = np.random.randint(0, bboxes.shape[0])
+        bboxes = np.expand_dims(bboxes[random_ind], axis=0)
+        box = bboxes[0]
+
+
+        img_3c = img_3c[box[1]:box[3], box[0]:box[2]]
+        gt = gt[box[1]:box[3], box[0]:box[2]]
+
+
+
+
+
+
         img_resize = self.resize_longest_side(img_3c)
         # Resizing
         img_resize = (img_resize - img_resize.min()) / np.clip(img_resize.max() - img_resize.min(), a_min=1e-8, a_max=None) # normalize to [0, 1], (H, W, 3
@@ -203,13 +232,14 @@ class NpyDataset(Dataset):
         # convert the shape to (3, H, W)
         img_padded = np.transpose(img_padded, (2, 0, 1)) # (3, 256, 256)
         assert np.max(img_padded)<=1.0 and np.min(img_padded)>=0.0, 'image should be normalized to [0, 1]'
-        gt = np.load(self.gt_path_files[index], 'r', allow_pickle=True) # multiple labels [0, 1,4,5...], (256,256)
         gt = cv2.resize(
             gt,
             (img_resize.shape[1], img_resize.shape[0]),
             interpolation=cv2.INTER_NEAREST
         ).astype(np.uint8)
         gt = self.pad_image(gt) # (256, 256)
+
+
         label_ids = np.unique(gt)[1:]
         try:
             gt2D = np.uint8(gt == random.choice(label_ids.tolist())) # only one label, (256, 256)
@@ -227,16 +257,9 @@ class NpyDataset(Dataset):
                 gt2D = np.ascontiguousarray(np.flip(gt2D, axis=-2))
                 # print('DA with flip upside down')
         gt2D = np.uint8(gt2D > 0)
-        y_indices, x_indices = np.where(gt2D > 0)
-        x_min, x_max = np.min(x_indices), np.max(x_indices)
-        y_min, y_max = np.min(y_indices), np.max(y_indices)
-        # add perturbation to bounding box coordinates
-        H, W = gt2D.shape
-        x_min = max(0, x_min - random.randint(0, self.bbox_shift))
-        x_max = min(W, x_max + random.randint(0, self.bbox_shift))
-        y_min = max(0, y_min - random.randint(0, self.bbox_shift))
-        y_max = min(H, y_max + random.randint(0, self.bbox_shift))
-        bboxes = np.array([x_min, y_min, x_max, y_max])
+
+
+        
         return {
             "image": torch.tensor(img_padded).float(),
             "gt2D": torch.tensor(gt2D[None, :,:]).long(),
@@ -347,7 +370,8 @@ lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
     mode='min',
     factor=0.9,
     patience=5,
-    cooldown=0
+    cooldown=0,
+    verbose=True
 )
 seg_loss = monai.losses.DiceLoss(sigmoid=True, squared_pred=True, reduction='mean')
 ce_loss = nn.BCEWithLogitsLoss(reduction='mean')
@@ -357,7 +381,7 @@ train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, nu
 
 if checkpoint and isfile(checkpoint):
     print(f"Resuming from checkpoint {checkpoint}")
-    checkpoint = torch.load(checkpoint)
+    checkpoint = torch.load(checkpoint, map_location=device)
     model.load_state_dict(checkpoint["model"], strict=True)
     optimizer.load_state_dict(checkpoint["optimizer"])
     start_epoch = checkpoint["epoch"]
@@ -376,11 +400,11 @@ for epoch in range(start_epoch + 1, num_epochs):
         image = batch["image"]
         gt2D = batch["gt2D"]
         boxes = batch["bboxes"]
+
         optimizer.zero_grad()
         image, gt2D, boxes = image.to(device), gt2D.to(device), boxes.to(device)
         
 
-        
         logits_pred = model(image) # TODO crop image based on boxes
         l_seg = seg_loss(logits_pred, gt2D)
         l_ce = ce_loss(logits_pred, gt2D.float())
