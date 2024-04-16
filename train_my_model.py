@@ -2,7 +2,7 @@
 import os
 import random
 import monai
-from os import listdir, makedirs
+from os import makedirs
 from os.path import join, isfile, basename
 from glob import glob
 from tqdm import tqdm
@@ -17,6 +17,7 @@ from datetime import datetime
 from utils.mobileunet import MobileUNet
 
 import cc3d
+from torch.utils.tensorboard import SummaryWriter
 
 import cv2
 
@@ -30,7 +31,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "-pretrained_checkpoint", type=str, default=None,
-    help="Path to the pretrained Lite-MedSAM checkpoint."
+    help="Path to the pretrained checkpoint."
 )
 parser.add_argument(
     "-resume", type=str, default=None,
@@ -102,7 +103,7 @@ args = parser.parse_args()
 # %%
 work_dir = args.work_dir
 data_root = args.data_root
-medsam_lite_checkpoint = args.pretrained_checkpoint
+model_checkpoint = args.pretrained_checkpoint
 num_epochs = args.num_epochs
 batch_size = args.batch_size
 num_workers = args.num_workers
@@ -118,6 +119,12 @@ checkpoint = args.resume
 show_preds = args.show_preds
 
 makedirs(work_dir, exist_ok=True)
+
+log_dir = "./logs"
+
+# Create a summary writer
+writer = SummaryWriter(work_dir)
+
 
 # %%
 torch.cuda.empty_cache()
@@ -151,7 +158,7 @@ def cal_iou(result, reference):
     return iou.unsqueeze(1)
 
 def plot_preds(image, gt2D, logits_pred):
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))  # Create a figure with 1 row and 3 columns
+    _, axes = plt.subplots(1, 3, figsize=(15, 5))  # Create a figure with 1 row and 3 columns
 
     # Plot GT2D
     axes[0].imshow(gt2D[0][0].detach().numpy()*255, cmap='gray')
@@ -213,15 +220,12 @@ class NpyDataset(Dataset):
 
         bboxes = np.array(boxes)
         random_ind = np.random.randint(0, bboxes.shape[0])
-        bboxes = np.expand_dims(bboxes[random_ind], axis=0)
+        bboxes = np.expand_dims(bboxes[random_ind], axis=0) # use one random bbox from all bboxes during training
         box = bboxes[0]
 
 
-        img_3c = img_3c[box[1]:box[3], box[0]:box[2]]
+        img_3c = img_3c[box[1]:box[3], box[0]:box[2]] # Crop image to bounding box
         gt = gt[box[1]:box[3], box[0]:box[2]]
-
-
-
 
 
 
@@ -335,28 +339,31 @@ if do_sancheck:
         break
 
 
-model = MobileUNet()
+
+if args.mobileunet:
+    model = MobileUNet()
+else:
+    print(f'Only mobileunet is implemented...')
+    exit()
 
 
-# %%
 
-
-if medsam_lite_checkpoint is not None:
-    if isfile(medsam_lite_checkpoint):
-        print(f"Finetuning with pretrained weights {medsam_lite_checkpoint}")
+if model_checkpoint is not None:
+    if isfile(model_checkpoint):
+        print(f"Finetuning with pretrained weights {model_checkpoint}")
         medsam_lite_ckpt = torch.load(
-            medsam_lite_checkpoint,
+            model_checkpoint,
             map_location="cpu"
         )
         model.load_state_dict(medsam_lite_ckpt, strict=True)
     else:
-        print(f"Pretained weights {medsam_lite_checkpoint} not found, training from scratch")
+        print(f"Pretained weights {model_checkpoint} not found, training from scratch")
 
 model = model.to(device)
 model.train()
 
 # %%
-print(f"MedSAM Lite size: {sum(p.numel() for p in model.parameters())}")
+print(f"Number of model parameters: {sum(p.numel() for p in model.parameters())}")
 # %%
 optimizer = optim.AdamW(
     model.parameters(),
@@ -370,8 +377,7 @@ lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
     mode='min',
     factor=0.9,
     patience=5,
-    cooldown=0,
-    verbose=True
+    cooldown=0
 )
 seg_loss = monai.losses.DiceLoss(sigmoid=True, squared_pred=True, reduction='mean')
 ce_loss = nn.BCEWithLogitsLoss(reduction='mean')
@@ -405,21 +411,19 @@ for epoch in range(start_epoch + 1, num_epochs):
         image, gt2D, boxes = image.to(device), gt2D.to(device), boxes.to(device)
         
 
-        logits_pred = model(image) # TODO crop image based on boxes
+        logits_pred = model(image) 
         l_seg = seg_loss(logits_pred, gt2D)
         l_ce = ce_loss(logits_pred, gt2D.float())
-        #mask_loss = l_seg + l_ce
-        mask_loss = seg_loss_weight * l_seg + ce_loss_weight * l_ce
-        iou_gt = cal_iou(torch.sigmoid(logits_pred) > 0.5, gt2D.bool())
-        #loss = mask_loss + l_iou
-        loss = mask_loss 
+        loss = seg_loss_weight * l_seg + ce_loss_weight * l_ce
+
         epoch_loss[step] = loss.item()
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
         pbar.set_description(f"Epoch {epoch} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}, loss: {loss.item():.4f}")
 
-
+        if step > 4:
+            break
         if show_preds:
             plot_preds(image, gt2D, logits_pred)
 
@@ -442,13 +446,11 @@ for epoch in range(start_epoch + 1, num_epochs):
         checkpoint["best_loss"] = best_loss
         torch.save(checkpoint, join(work_dir, "medsam_lite_best.pth"))
 
-    epoch_loss_reduced = 1e10
-    # %% plot loss
-    '''
-    plt.plot(train_losses)
-    plt.title("Dice + Binary Cross Entropy + IoU Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.savefig(join(work_dir, "train_loss.png"))
-    plt.close()
-    '''
+
+
+    # Write the loss value to TensorBoard
+    writer.add_scalar('Epoch Loss', epoch_loss_reduced, global_step=epoch)  # 'global_step' is the step or epoch number
+
+    # Close the writer
+writer.close()
+

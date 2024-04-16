@@ -8,7 +8,6 @@ from tqdm import tqdm
 from time import time
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 from segment_anything.modeling import MaskDecoder, PromptEncoder, TwoWayTransformer
@@ -22,7 +21,7 @@ from datetime import datetime
 import cc3d
 
 from utils.mobileunet import MobileUNet
-
+from utils.medsam_model import my_model_Lite
 
 #%% set seeds
 torch.set_float32_matmul_precision('high')
@@ -77,18 +76,16 @@ parser.add_argument(
     default='./overlay',
     help='directory to save the overlay image'
 )
+
 parser.add_argument(
-    '--grabcut',
-    default=False,
-    action='store_true',
-    help='Use GrabCut instead'
+    '-model',
+    type=str,
+    default='medsam',
+    choices=['medsam', 'grabcut', 'mobileunet'],
+    help='Model architecture'
 )
-parser.add_argument(
-    '--mobileunet',
-    default=False,
-    action='store_true',
-    help='Use Mobile U-Net instead'
-)
+
+
 args = parser.parse_args()
 
 import resource
@@ -140,72 +137,7 @@ def pad_image(image, target_size=256):
 
     return image_padded
 
-class my_model_Lite(nn.Module):
-    def __init__(
-            self, 
-            image_encoder, 
-            mask_decoder,
-            prompt_encoder
-        ):
-        super().__init__()
-        self.image_encoder = image_encoder
-        self.mask_decoder = mask_decoder
-        self.prompt_encoder = prompt_encoder
 
-    def forward(self, image, box_np):
-        image_embedding = self.image_encoder(image) # (B, 256, 64, 64)
-        # do not compute gradients for prompt encoder
-        with torch.no_grad():
-            box_torch = torch.as_tensor(box_np, dtype=torch.float32, device=image.device)
-            if len(box_torch.shape) == 2:
-                box_torch = box_torch[:, None, :] # (B, 1, 4)
-
-        sparse_embeddings, dense_embeddings = self.prompt_encoder(
-            points=None,
-            boxes=box_np,
-            masks=None,
-        )
-        low_res_masks, iou_predictions = self.mask_decoder(
-            image_embeddings=image_embedding, # (B, 256, 64, 64)
-            image_pe=self.prompt_encoder.get_dense_pe(), # (1, 256, 64, 64)
-            sparse_prompt_embeddings=sparse_embeddings, # (B, 2, 256)
-            dense_prompt_embeddings=dense_embeddings, # (B, 256, 64, 64)
-            multimask_output=False,
-          ) # (B, 1, 256, 256)
-
-        return low_res_masks
-
-    @torch.no_grad()
-    def postprocess_masks(self, masks, new_size, original_size):
-        """
-        Do cropping and resizing
-
-        Parameters
-        ----------
-        masks : torch.Tensor
-            masks predicted by the model
-        new_size : tuple
-            the shape of the image after resizing to the longest side of 256
-        original_size : tuple
-            the original shape of the image
-
-        Returns
-        -------
-        torch.Tensor
-            the upsampled mask to the original size
-        """
-        # Crop
-        masks = masks[..., :new_size[0], :new_size[1]]
-        # Resize
-
-        masks = F.interpolate(
-            masks,
-            size=(original_size[0], original_size[1]),
-            mode="bilinear",
-            align_corners=False,
-        )
-
-        return masks
 @torch.no_grad()
 def postprocess_masks(masks, new_size, original_size):
     """
@@ -374,7 +306,7 @@ def my_model_inference(my_model_model, img_embed, box_256, new_size, original_si
 
     return my_model_seg, iou
 
-if not args.grabcut and not args.mobileunet:
+if args.model == 'medsam':
     my_model_lite_image_encoder = TinyViT(
         img_size=256,
         in_chans=3,
@@ -426,8 +358,9 @@ if not args.grabcut and not args.mobileunet:
     my_model_lite_model.load_state_dict(my_model_checkpoint)
     my_model_lite_model.to(device)
     my_model_lite_model.eval()
-elif args.mobileunet:
+elif args.model == 'mobileunet':
     my_model = MobileUNet()
+
 
 
 def grabcut_pred(rect, mask, image, new_size, original_size):
@@ -497,7 +430,7 @@ def my_model_infer_npz_2D(img_npz_file):
     img_256_padded = pad_image(img_256_norm, 256)
 
 
-    if not args.grabcut and not args.mobileunet:
+    if args.model == 'medsam':
         with torch.no_grad():
             img_256_tensor = torch.tensor(img_256_padded).float().permute(2, 0, 1).unsqueeze(0).to(device) # (B, 3, 256, 256)
 
@@ -507,10 +440,10 @@ def my_model_infer_npz_2D(img_npz_file):
         box256 = resize_box_to_256(box, original_size=(H, W)) 
         
 
-        if args.grabcut:
+        if args.model == 'grabcut':
             my_model_mask = grabcut_pred(box256, segs, img_256_padded_non_norm, (newh, neww), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
 
-        elif args.mobileunet:
+        elif args.model == 'mobileunet':
 
             my_model_mask = my_model(torch.Tensor(img_256_padded_non_norm.transpose(2, 1, 0)).unsqueeze(0))
 
@@ -522,7 +455,7 @@ def my_model_infer_npz_2D(img_npz_file):
 
         else:
             box256 = box256[None, ...] # (1, 4)
-            my_model_mask, iou_pred = my_model_inference(my_model_lite_model, image_embedding, box256, (newh, neww), (H, W))
+            my_model_mask, _ = my_model_inference(my_model_lite_model, image_embedding, box256, (newh, neww), (H, W))
 
         if idx > 255:
             print(f'[WARNING] Index {idx} is overflowing in the segmentation mask!')
@@ -609,7 +542,7 @@ def my_model_infer_npz_3D(img_npz_file):
             img_256 = resize_longest_side(img_3c, 256)
             new_H, new_W = img_256.shape[:2]
 
-            if not args.grabcut:
+            if not args.model == 'grabcut':
                 img_256 = (img_256 - img_256.min()) / np.clip(
                     img_256.max() - img_256.min(), a_min=1e-8, a_max=None
                 )  # normalize to [0, 1], (H, W, 3)s
@@ -617,7 +550,7 @@ def my_model_infer_npz_3D(img_npz_file):
             img_256 = pad_image(img_256)
             
 
-            if not args.grabcut and not args.mobileunet:
+            if args.model == 'medsam':
                 # convert the shape to (3, H, W)
                 img_256_tensor = torch.tensor(img_256).float().permute(2, 0, 1).unsqueeze(0).to(device)
                 # get the image embedding
@@ -634,10 +567,10 @@ def my_model_infer_npz_3D(img_npz_file):
                 else:
                     box_256 = resize_box_to_256(mid_slice_bbox_2d, original_size=(H, W))
 
-            if args.grabcut:
+            if args.model == 'grabcut':
 
                 img_2d_seg = grabcut_pred(box_256.astype(np.uint8), np.zeros_like(img_256, dtype=np.uint8), img_256, (new_H, new_W), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
-            elif args.mobileunet:
+            elif args.model == 'mobileunet':
                 img_2d_seg = my_model(torch.Tensor(img_256.transpose(2, 1, 0)).unsqueeze(0))
                 low_res_pred = postprocess_masks(img_2d_seg, [new_H, new_W], (H, W))
                 low_res_pred = torch.sigmoid(low_res_pred)  
@@ -662,14 +595,14 @@ def my_model_infer_npz_3D(img_npz_file):
 
             img_256 = resize_longest_side(img_3c, 256)
             new_H, new_W = img_256.shape[:2]
-            if not args.grabcut and not args.mobileunet:
+            if args.model == 'medsam':
                 img_256 = (img_256 - img_256.min()) / np.clip(
                     img_256.max() - img_256.min(), a_min=1e-8, a_max=None
                 )  # normalize to [0, 1], (H, W, 3)
                 ## Pad image to 256x256
             img_256 = pad_image(img_256)
 
-            if not args.grabcut and not args.mobileunet:
+            if args.model == 'medsam':
                 img_256_tensor = torch.tensor(img_256).float().permute(2, 0, 1).unsqueeze(0).to(device)
                 # get the image embedding
                 with torch.no_grad():
@@ -683,16 +616,16 @@ def my_model_infer_npz_3D(img_npz_file):
             else:
                 scale_256 = 256 / max(H, W)
                 box_256 = mid_slice_bbox_2d * scale_256
-            if args.grabcut:
+            if args.model == 'grabcut':
                 img_2d_seg = grabcut_pred(box_256.astype(np.uint8), np.zeros_like(img_256, dtype=np.uint8), img_256, (new_H, new_W), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
-            elif args.mobileunet:
+            elif args.model == 'mobileunet':
                 img_2d_seg = my_model(torch.Tensor(img_256.transpose(2, 1, 0)).unsqueeze(0))
                 low_res_pred = postprocess_masks(img_2d_seg, [new_H, new_W], (H, W))
                 low_res_pred = torch.sigmoid(low_res_pred)  
                 low_res_pred = low_res_pred.squeeze().cpu().numpy()  
                 img_2d_seg = (low_res_pred > 0.5).astype(np.uint8)
             else:
-                img_2d_seg, iou_pred = my_model_inference(my_model_lite_model, image_embedding, box_256, [new_H, new_W], [H, W])
+                img_2d_seg, _ = my_model_inference(my_model_lite_model, image_embedding, box_256, [new_H, new_W], [H, W])
             segs_3d_temp[z, img_2d_seg>0] = idx
 
         segs[segs_3d_temp>0] = idx
