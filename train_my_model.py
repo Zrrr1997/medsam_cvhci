@@ -86,10 +86,11 @@ parser.add_argument(
     help="Whether to do sanity check for dataloading."
 )
 parser.add_argument(
-    '--mobileunet',
-    default=False,
-    action='store_true',
-    help='Use Mobile U-Net instead'
+    '--model',
+    type=str,
+    default='mobileunet',
+    choices=['mobileunet'],
+    help='Model architecture'
 )
 
 parser.add_argument(
@@ -340,7 +341,7 @@ if do_sancheck:
 
 
 
-if args.mobileunet:
+if args.model == 'mobileunet':
     model = MobileUNet()
 else:
     print(f'Only mobileunet is implemented...')
@@ -422,8 +423,6 @@ for epoch in range(start_epoch + 1, num_epochs):
         optimizer.zero_grad()
         pbar.set_description(f"Epoch {epoch} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}, loss: {loss.item():.4f}")
 
-        if step > 4:
-            break
         if show_preds:
             plot_preds(image, gt2D, logits_pred)
 
