@@ -102,6 +102,13 @@ parser.add_argument(
     help='whether to omit all the predictions outside the bbox'
 )
 
+parser.add_argument(
+    '--force_volume',
+    default=False,
+    action='store_true',
+    help='whether to force the prediction to [20,80] percent of the bbox volume'
+)
+
 
 args = parser.parse_args()
 
