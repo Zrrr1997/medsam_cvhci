@@ -222,7 +222,7 @@ class NpyDataset(Dataset):
         bboxes = np.array(boxes)
         if bboxes.shape[0] == 0:
             random_ind = 0
-            bboxes = [0, 0, img_3c.shape[0], img_3c.shape[1]]
+            bboxes = [[0, 0, img_3c.shape[0], img_3c.shape[1]]]
         else:
             random_ind = np.random.randint(0, bboxes.shape[0])
         bboxes = np.expand_dims(bboxes[random_ind], axis=0) # use one random bbox from all bboxes during training
