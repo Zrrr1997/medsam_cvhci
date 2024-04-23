@@ -224,9 +224,9 @@ class NpyDataset(Dataset):
         bboxes = np.expand_dims(bboxes[random_ind], axis=0) # use one random bbox from all bboxes during training
         box = bboxes[0]
 
-        if (box[3] - box[1]) == 0:
+        if (box[3] - box[1]) <= 1:
             box[3] += 1
-        if (box[2] - box[1]) == 0:
+        if (box[2] - box[1]) <= 1:
             box[2] += 1
 
         img_3c = img_3c[box[1]:box[3], box[0]:box[2]] # Crop image to bounding box
