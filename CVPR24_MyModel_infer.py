@@ -715,7 +715,7 @@ def my_model_infer_npz_3D(img_npz_file):
 
         if args.force_volume: # try to push the tumor to bbox ratio between 20% and 80%
             if args.model == 'th': 
-                ratio = np.sum(curr_seg / box_vol(box3D))
+                ratio = np.sum(curr_seg) / box_vol(box3D)
                 structuring_element = np.ones((2, 2, 2), dtype=np.uint8)
 
                 if ratio == 0.0: # initialize mask with at least one voxel
@@ -734,9 +734,9 @@ def my_model_infer_npz_3D(img_npz_file):
                         curr_seg[box_c[2], box_c[1], box_c[0]] = 1
 
 
-                if ratio > 0.8:
+                if ratio > 0.89:
                     c_ratio = ratio
-                    while c_ratio > 0.8:
+                    while c_ratio > 0.89:
                         curr_seg = binary_erosion(curr_seg, structure=structuring_element)
                         c_ratio = np.sum(curr_seg / box_vol(box3D))
                     if c_ratio == 0:
