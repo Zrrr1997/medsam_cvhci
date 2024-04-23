@@ -278,6 +278,7 @@ class NpyDataset(Dataset):
         """
         Expects a numpy array with shape HxWxC in uint8 format.
         """
+        print(image.shape)
         long_side_length = self.target_length
         oldh, oldw = image.shape[0], image.shape[1]
         scale = long_side_length * 1.0 / max(oldh, oldw)
@@ -438,12 +439,12 @@ for epoch in range(start_epoch + 1, num_epochs):
         "loss": epoch_loss_reduced,
         "best_loss": best_loss,
     }
-    torch.save(checkpoint, join(work_dir, "medsam_lite_latest.pth"))
+    torch.save(checkpoint, join(work_dir, "model_latest.pth"))
     if epoch_loss_reduced < best_loss:
         print(f"New best loss: {best_loss:.4f} -> {epoch_loss_reduced:.4f}")
         best_loss = epoch_loss_reduced
         checkpoint["best_loss"] = best_loss
-        torch.save(checkpoint, join(work_dir, "medsam_lite_best.pth"))
+        torch.save(checkpoint, join(work_dir, "model_best.pth"))
 
 
 

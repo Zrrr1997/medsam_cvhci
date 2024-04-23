@@ -558,14 +558,11 @@ def compute_3d_bounding_boxes(binary_mask):
     # Label connected components
     connected_components = cc3d.connected_components(binary_mask, connectivity=26)
 
-
-
     bounding_boxes = []
     for label in np.unique(connected_components)[1:]:  # Skip background label 0
         labeled_mask = connected_components == label
         indices = np.nonzero(labeled_mask)
-
-        
+  
         bounding_box = (
             min(indices[2]), min(indices[1]), min(indices[0]),
             max(indices[2]), max(indices[1]), max(indices[0])
@@ -582,7 +579,6 @@ def my_model_infer_npz_3D(img_npz_file):
     npz_name = basename(img_npz_file)
     npz_data = np.load(img_npz_file, 'r', allow_pickle=True)
     img_3D = npz_data['imgs'] # (D, H, W)
-    spacing = npz_data['spacing'] # not used in this demo because it treats each slice independently
     segs = np.zeros_like(img_3D, dtype=np.uint16) 
 
     if 'boxes' in npz_data.keys():
@@ -590,23 +586,12 @@ def my_model_infer_npz_3D(img_npz_file):
     else:
         gts = npz_data['gts']
         gts = (cc3d.connected_components(gts, connectivity=26) > 0)
-
-        
         boxes_3D = compute_3d_bounding_boxes(gts)
     
-
-
-
     for idx, box3D in enumerate(boxes_3D, start=1):
-
-
         
         segs_3d_temp = np.zeros_like(img_3D, dtype=np.uint16) 
         x_min, y_min, z_min, x_max, y_max, z_max = box3D
-
-
-
-
 
         assert z_min <= z_max, f"z_min should be smaller than z_max, but got {z_min=} and {z_max=}"
         mid_slice_bbox_2d = np.array([x_min, y_min, x_max, y_max])
@@ -726,8 +711,7 @@ def my_model_infer_npz_3D(img_npz_file):
             # Apply the outside bounding box mask to the output mask
             curr_seg[outside_bbox_mask == 0] = 0 # for th
             segs_3d_temp[outside_bbox_mask == 0] = 0 # for everything else
-
-        if args.force_volume: # try to push the tumor to bbox ratio between 20% and 80%
+        if args.force_volume: # try to push the tumor to bbox ratio within a certain range
             if args.model == 'th': 
                 ratio = np.sum(curr_seg) / box_vol(box3D)
                 structuring_element = np.ones((2, 2, 2), dtype=np.uint8)
@@ -747,7 +731,6 @@ def my_model_infer_npz_3D(img_npz_file):
                         box_c = box_center(box3D)
                         curr_seg[box_c[2], box_c[1], box_c[0]] = 1
 
-
                 if ratio > args.upper_interval:
                     c_ratio = ratio
                     while c_ratio > args.upper_interval:
@@ -756,7 +739,6 @@ def my_model_infer_npz_3D(img_npz_file):
                     if c_ratio == 0:
                         box_c = box_center(box3D)
                         curr_seg[box_c[2], box_c[1], box_c[0]] = 1
-        
         if np.sum(curr_seg) / box_vol(box3D) > 1:
             print(f'[WARNING] Segmentation bleeds out of the bounding box with a seg/bbox ratio of {np.sum(curr_seg) / box_vol(box3D)}')
         
