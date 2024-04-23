@@ -226,8 +226,10 @@ class NpyDataset(Dataset):
 
         if (box[3] - box[1]) <= 1:
             box[3] += 1
-        if (box[2] - box[1]) <= 1:
+            #box[1] -= 1
+        if (box[2] - box[0]) <= 1:
             box[2] += 1
+            #box[0] -= 1
 
         img_3c = img_3c[box[1]:box[3], box[0]:box[2]] # Crop image to bounding box
         gt = gt[box[1]:box[3], box[0]:box[2]]
