@@ -438,48 +438,6 @@ def grabcut_pred(rect, mask, image, new_size, original_size):
 
     return masks
 
-def th_pred(rect, image, new_size, original_size, th=50, interpolate=True):
-
-
-    
-    image = image[:, : ,0]
-    rect = enlarge_bbox(rect)
-
-
-    x_min, y_min, x_max, y_max = rect.astype(np.uint8)
-    if th == 0: # Otsu
-        threshold = 141
-    else:
-        context = image[y_min:y_max, x_min:x_max]
-        threshold = np.percentile(context, th)
-
-
-
-    outputMask = (image > threshold) * 1
-
-
-
-
-    outside_bbox_mask = np.zeros_like(outputMask)
-
-    outside_bbox_mask[y_min:y_max, x_min:x_max] = 1
-
-    # Apply the outside bounding box mask to the output mask
-    outputMask[outside_bbox_mask == 0] = 0
-
-    masks = torch.Tensor(outputMask[..., :new_size[0], :new_size[1]]).unsqueeze(0).unsqueeze(0)
-
-    # Resize
-
-    if interpolate:
-        masks = F.interpolate(
-            masks,
-            size=(original_size[0], original_size[1]),
-            mode="bilinear",
-        ).squeeze()
-    
-
-    return masks
 
 
 def my_model_infer_npz_2D(img_npz_file):
@@ -599,7 +557,7 @@ def box_vol(box3D):
     return max((box3D[3] - box3D[0]), 1) * max((box3D[4] - box3D[1]), 1) * max((box3D[5] - box3D[2]), 1)
 def box_center(box3D):
     return (int(box3D[0] + (box3D[3] - box3D[0]) / 2), int(box3D[1] + (box3D[4] - box3D[1]) / 2), int(box3D[2] + (box3D[5] - box3D[2]) / 2))
-def my_model_infer_npz_3D(img_npz_file, ratios):
+def my_model_infer_npz_3D(img_npz_file):
     npz_name = basename(img_npz_file)
     npz_data = np.load(img_npz_file, 'r', allow_pickle=True)
     img_3D = npz_data['imgs'] # (D, H, W)
@@ -684,9 +642,6 @@ def my_model_infer_npz_3D(img_npz_file, ratios):
                 img_2d_seg = (low_res_pred > 0.5).astype(np.uint8)
             elif args.model == 'medsam':
                 img_2d_seg, _ = my_model_inference(my_model_lite_model, image_embedding, box_256, [new_H, new_W], [H, W])
-            #elif args.model == 'th':
-            #    img_2d_seg = th_pred(box_256, img_256, (new_H, new_W), (H, W), th=args.th)
-
 
             segs_3d_temp[z, img_2d_seg>0] = idx
 
@@ -736,68 +691,54 @@ def my_model_infer_npz_3D(img_npz_file, ratios):
                 img_2d_seg = (low_res_pred > 0.5).astype(np.uint8)
             elif args.model == 'medsam':
                 img_2d_seg, _ = my_model_inference(my_model_lite_model, image_embedding, box_256, [new_H, new_W], [H, W])
-            #elif args.model == 'th':
-            #    img_2d_seg = th_pred(box_256, img_256, (new_H, new_W), (H, W), th=args.th)
+
             segs_3d_temp[z, img_2d_seg>0] = idx
 
         if args.model == 'th':
             segs_3d_temp = (img_3D > args.th) * idx
-        # Omit everything outside the bbox
         curr_seg = (segs_3d_temp == idx) * 1
+
         x_min, y_min, z_max, x_max, y_max, z_max = box3D
-        if args.filter_background:
+        if args.filter_background: # Omit everything outside the bbox
             outside_bbox_mask = np.zeros_like(segs_3d_temp)
             outside_bbox_mask[z_min:z_max, y_min:y_max, x_min:x_max] = 1
             # Apply the outside bounding box mask to the output mask
-            curr_seg[outside_bbox_mask == 0] = 0
-        '''
-        if args.model == 'th': # try to push the tumor to bbox ratio between 20% and 80%
-            ratio = np.sum(curr_seg / box_vol(box3D))
-            structuring_element = np.ones((2, 2, 2), dtype=np.uint8)
+            curr_seg[outside_bbox_mask == 0] = 0 # for th
+            segs_3d_temp[outside_bbox_mask == 0] = 0 # for everything else
 
-            if ratio == 0.0: # initialize mask with at least one voxel
-                box_c = box_center(box3D)
-                curr_seg[box_c[2], box_c[1], box_c[0]] = 1
-            if ratio < 0.2:
-                c_ratio = ratio
-                while c_ratio < 0.2:
-                    print('kek')
-                    curr_seg = binary_dilation(curr_seg, structure=structuring_element)
-                    c_ratio = np.sum(curr_seg / box_vol(box3D))
-                if c_ratio >= 1.0:
-                    curr_seg = binary_erosion(curr_seg, structure=structuring_element)
-                    c_ratio = np.sum(curr_seg / box_vol(box3D))
-                if c_ratio == 0:
+        if args.force_volume: # try to push the tumor to bbox ratio between 20% and 80%
+            if args.model == 'th': 
+                ratio = np.sum(curr_seg / box_vol(box3D))
+                structuring_element = np.ones((2, 2, 2), dtype=np.uint8)
+
+                if ratio == 0.0: # initialize mask with at least one voxel
                     box_c = box_center(box3D)
                     curr_seg[box_c[2], box_c[1], box_c[0]] = 1
+                if ratio < 0.2:
+                    c_ratio = ratio
+                    while c_ratio < 0.2:
+                        curr_seg = binary_dilation(curr_seg, structure=structuring_element)
+                        c_ratio = np.sum(curr_seg / box_vol(box3D))
+                    if c_ratio >= 1.0:
+                        curr_seg = binary_erosion(curr_seg, structure=structuring_element)
+                        c_ratio = np.sum(curr_seg / box_vol(box3D))
+                    if c_ratio == 0:
+                        box_c = box_center(box3D)
+                        curr_seg[box_c[2], box_c[1], box_c[0]] = 1
 
 
-            if ratio > 0.8:
-                c_ratio = ratio
-                while c_ratio > 0.8:
-                    print('top kek')
-                    curr_seg = binary_erosion(curr_seg, structure=structuring_element)
-                    c_ratio = np.sum(curr_seg / box_vol(box3D))
-                if c_ratio == 0:
-                    box_c = box_center(box3D)
-                    curr_seg[box_c[2], box_c[1], box_c[0]] = 1
-        '''
-
-
+                if ratio > 0.8:
+                    c_ratio = ratio
+                    while c_ratio > 0.8:
+                        curr_seg = binary_erosion(curr_seg, structure=structuring_element)
+                        c_ratio = np.sum(curr_seg / box_vol(box3D))
+                    if c_ratio == 0:
+                        box_c = box_center(box3D)
+                        curr_seg[box_c[2], box_c[1], box_c[0]] = 1
         
-        ratios.append(np.sum(curr_seg) / box_vol(box3D))
         if np.sum(curr_seg) / box_vol(box3D) > 1:
-            print(np.sum(curr_seg), box_vol(box3D))
-            affine = np.eye(4)
-            affine[0][0] = -1
-            ni_img = nib.Nifti1Image(curr_seg.astype(np.uint8) * 255, affine=affine)
-            ni_img.header.get_xyzt_units()
-            ni_img.to_filename(f"pred.nii.gz")
-            ni_img = nib.Nifti1Image(gts.astype(np.uint8) * 255, affine=affine)
-            ni_img.header.get_xyzt_units()
-            ni_img.to_filename(f"gt.nii.gz")
-            print(box3D)
-            exit()
+            print(f'[WARNING] Segmentation bleeds out of the bounding box with a seg/bbox ratio of {np.sum(curr_seg) / box_vol(box3D)}')
+        
             
         if args.model == 'th':
             segs[curr_seg > 0] = idx
@@ -840,11 +781,10 @@ if __name__ == '__main__':
     efficiency = OrderedDict()
     efficiency['case'] = []
     efficiency['time'] = []
-    ratios = []
     for img_npz_file in tqdm(img_npz_files):
         start_time = time()
         if basename(img_npz_file).startswith('3D') or basename(img_npz_file).startswith('CT') or basename(img_npz_file).startswith('MR') or basename(img_npz_file).startswith('PET'):
-            my_model_infer_npz_3D(img_npz_file, ratios)
+            my_model_infer_npz_3D(img_npz_file)
         else:
             my_model_infer_npz_2D(img_npz_file)
         end_time = time()
@@ -852,7 +792,6 @@ if __name__ == '__main__':
         efficiency['time'].append(end_time - start_time)
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(current_time, 'file name:', basename(img_npz_file), 'time cost:', np.round(end_time - start_time, 4))
-    np.save('ratios.npy', np.array(ratios))
     
     print('Average Time:', np.mean(efficiency['time']))
     efficiency_df = pd.DataFrame(efficiency)
