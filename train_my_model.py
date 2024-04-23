@@ -220,7 +220,10 @@ class NpyDataset(Dataset):
             boxes.append(bounding_box)
 
         bboxes = np.array(boxes)
-        random_ind = np.random.randint(0, bboxes.shape[0])
+        if bboxes.shape[0] == 0:
+            random_ind = 0
+        else:
+            random_ind = np.random.randint(0, bboxes.shape[0])
         bboxes = np.expand_dims(bboxes[random_ind], axis=0) # use one random bbox from all bboxes during training
         box = bboxes[0]
 
