@@ -109,6 +109,20 @@ parser.add_argument(
     help='whether to force the prediction to [20,80] percent of the bbox volume'
 )
 
+parser.add_argument(
+    '-upper_interval',
+    type=float,
+    default=0.81,
+    help='upper value for the interval for volume forcing',
+)
+
+parser.add_argument(
+    '-lower_interval',
+    type=float,
+    default=0.19,
+    help='lower value for the interval for volume forcing',
+)
+
 
 args = parser.parse_args()
 
@@ -721,9 +735,9 @@ def my_model_infer_npz_3D(img_npz_file):
                 if ratio == 0.0: # initialize mask with at least one voxel
                     box_c = box_center(box3D)
                     curr_seg[box_c[2], box_c[1], box_c[0]] = 1
-                if ratio < 0.2:
+                if ratio < args.lower_interval:
                     c_ratio = ratio
-                    while c_ratio < 0.2:
+                    while c_ratio < args.lower_interval:
                         curr_seg = binary_dilation(curr_seg, structure=structuring_element)
                         c_ratio = np.sum(curr_seg / box_vol(box3D))
                     if c_ratio >= 1.0:
@@ -734,9 +748,9 @@ def my_model_infer_npz_3D(img_npz_file):
                         curr_seg[box_c[2], box_c[1], box_c[0]] = 1
 
 
-                if ratio > 0.89:
+                if ratio > args.upper_interval:
                     c_ratio = ratio
-                    while c_ratio > 0.89:
+                    while c_ratio > args.upper_interval:
                         curr_seg = binary_erosion(curr_seg, structure=structuring_element)
                         c_ratio = np.sum(curr_seg / box_vol(box3D))
                     if c_ratio == 0:
