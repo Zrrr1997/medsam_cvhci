@@ -1,6 +1,9 @@
 from os import makedirs
 from os.path import join, basename
+from scipy.ndimage import binary_dilation, binary_erosion
+
 import os
+import nibabel as nib
 import gc
 
 from glob import glob
@@ -81,8 +84,15 @@ parser.add_argument(
     '-model',
     type=str,
     default='medsam',
-    choices=['medsam', 'grabcut', 'mobileunet'],
+    choices=['medsam', 'grabcut', 'mobileunet', 'th'],
     help='Model architecture'
+)
+
+parser.add_argument(
+    '-th',
+    type=int,
+    default=50,
+    help='percentile thresholding for the PET data',
 )
 
 
@@ -244,6 +254,28 @@ def get_bbox256(mask_256, bbox_shift=3):
 
     return bboxes256
 
+def enlarge_bbox(bbox):
+    # Calculate differences in each dimension
+    bbox = list(bbox)
+    x_diff = bbox[2] - bbox[0]
+    y_diff = bbox[3] - bbox[1]
+    
+    # Find the maximum difference
+    max_diff = min(x_diff, y_diff)
+    
+    # Enlarge the bounding box if the maximum difference is not larger than 1
+    if max_diff <= 1:
+        # Enlarge the bounding box by 1 in the maximum dimension
+        bbox[2] += 1  # x_max
+        bbox[3] += 1  # y_max
+
+        bbox[0] -= 1  # x_max
+        bbox[1] -= 1  # y_max
+            
+    bbox = [el if el >= 0 else el + 1 for el in bbox]
+    
+    return np.array(bbox)
+
 def resize_box_to_256(box, original_size):
     """
     the input bounding box is obtained from the original image
@@ -373,6 +405,8 @@ def grabcut_pred(rect, mask, image, new_size, original_size):
     outputMask = np.where((mask == cv2.GC_BGD) | (mask == cv2.GC_PR_BGD), 0, 1)
     outputMask = (outputMask * 255).astype("uint8")
 
+
+
     x_min, y_min, x_max, y_max = rect
 
     # Create a mask to represent the region outside the bounding box
@@ -387,12 +421,56 @@ def grabcut_pred(rect, mask, image, new_size, original_size):
     masks = torch.Tensor(outputMask[..., :new_size[0], :new_size[1]]).unsqueeze(0).unsqueeze(0)
     # Resize
 
+
     masks = F.interpolate(
         masks,
         size=(original_size[0], original_size[1]),
         mode="bilinear",
         align_corners=False,
     ).squeeze()
+
+    return masks
+
+def th_pred(rect, image, new_size, original_size, th=50, interpolate=True):
+
+
+    
+    image = image[:, : ,0]
+    rect = enlarge_bbox(rect)
+
+
+    x_min, y_min, x_max, y_max = rect.astype(np.uint8)
+    if th == 0: # Otsu
+        threshold = 141
+    else:
+        context = image[y_min:y_max, x_min:x_max]
+        threshold = np.percentile(context, th)
+
+
+
+    outputMask = (image > threshold) * 1
+
+
+
+
+    outside_bbox_mask = np.zeros_like(outputMask)
+
+    outside_bbox_mask[y_min:y_max, x_min:x_max] = 1
+
+    # Apply the outside bounding box mask to the output mask
+    outputMask[outside_bbox_mask == 0] = 0
+
+    masks = torch.Tensor(outputMask[..., :new_size[0], :new_size[1]]).unsqueeze(0).unsqueeze(0)
+
+    # Resize
+
+    if interpolate:
+        masks = F.interpolate(
+            masks,
+            size=(original_size[0], original_size[1]),
+            mode="bilinear",
+        ).squeeze()
+    
 
     return masks
 
@@ -415,6 +493,7 @@ def my_model_infer_npz_2D(img_npz_file):
             indices = np.nonzero(labeled_mask)
             bounding_box = (min(indices[1]), min(indices[0]), max(indices[1]), max(indices[0]))  # Format: (x_min, y_min, x_max, y_max)
             boxes.append(bounding_box)
+
 
     segs = np.zeros(img_3c.shape[:2], dtype=np.uint8)
 
@@ -453,7 +532,7 @@ def my_model_infer_npz_2D(img_npz_file):
             my_model_mask = (low_res_pred > 0.5).astype(np.uint8)
     
 
-        else:
+        elif args.model == 'medsam':
             box256 = box256[None, ...] # (1, 4)
             my_model_mask, _ = my_model_inference(my_model_lite_model, image_embedding, box256, (newh, neww), (H, W))
 
@@ -489,8 +568,11 @@ def my_model_infer_npz_2D(img_npz_file):
 
 
 def compute_3d_bounding_boxes(binary_mask):
+
     # Label connected components
     connected_components = cc3d.connected_components(binary_mask, connectivity=26)
+
+
 
     bounding_boxes = []
     for label in np.unique(connected_components)[1:]:  # Skip background label 0
@@ -501,30 +583,45 @@ def compute_3d_bounding_boxes(binary_mask):
         bounding_box = (
             min(indices[2]), min(indices[1]), min(indices[0]),
             max(indices[2]), max(indices[1]), max(indices[0])
-        )  # Format: (x_min, y_min, z_min, x_max, y_max, z_max)
+        )  # Format: [[x_min, y_min, z_min, x_max, y_max, z_max]]
 
         bounding_boxes.append(bounding_box)
 
     return bounding_boxes
-
-def my_model_infer_npz_3D(img_npz_file):
+def box_vol(box3D):
+    return max((box3D[3] - box3D[0]), 1) * max((box3D[4] - box3D[1]), 1) * max((box3D[5] - box3D[2]), 1)
+def box_center(box3D):
+    return (int(box3D[0] + (box3D[3] - box3D[0]) / 2), int(box3D[1] + (box3D[4] - box3D[1]) / 2), int(box3D[2] + (box3D[5] - box3D[2]) / 2))
+def my_model_infer_npz_3D(img_npz_file, ratios):
     npz_name = basename(img_npz_file)
     npz_data = np.load(img_npz_file, 'r', allow_pickle=True)
     img_3D = npz_data['imgs'] # (D, H, W)
     spacing = npz_data['spacing'] # not used in this demo because it treats each slice independently
-    segs = np.zeros_like(img_3D, dtype=np.uint8) 
+    segs = np.zeros_like(img_3D, dtype=np.uint16) 
 
     if 'boxes' in npz_data.keys():
         boxes_3D = npz_data['boxes'] # [[x_min, y_min, z_min, x_max, y_max, z_max]]
     else:
         gts = npz_data['gts']
+        gts = (cc3d.connected_components(gts, connectivity=26) > 0)
+
+        
         boxes_3D = compute_3d_bounding_boxes(gts)
     
 
 
+
     for idx, box3D in enumerate(boxes_3D, start=1):
-        segs_3d_temp = np.zeros_like(img_3D, dtype=np.uint8) 
+
+
+        
+        segs_3d_temp = np.zeros_like(img_3D, dtype=np.uint16) 
         x_min, y_min, z_min, x_max, y_max, z_max = box3D
+
+
+
+
+
         assert z_min <= z_max, f"z_min should be smaller than z_max, but got {z_min=} and {z_max=}"
         mid_slice_bbox_2d = np.array([x_min, y_min, x_max, y_max])
         z_middle = int((z_max - z_min)/2 + z_min)
@@ -532,6 +629,8 @@ def my_model_infer_npz_3D(img_npz_file):
         # infer from middle slice to the z_max
         # print(npz_name, 'infer from middle slice to the z_max')
         for z in range(z_middle, max(z_max, z_middle+1)):
+            if args.model == 'th':
+                break
             img_2d = img_3D[z, :, :]
             if len(img_2d.shape) == 2:
                 img_3c = np.repeat(img_2d[:, :, None], 3, axis=-1)
@@ -542,7 +641,7 @@ def my_model_infer_npz_3D(img_npz_file):
             img_256 = resize_longest_side(img_3c, 256)
             new_H, new_W = img_256.shape[:2]
 
-            if not args.model == 'grabcut':
+            if not args.model == 'grabcut' and not args.model == 'th':
                 img_256 = (img_256 - img_256.min()) / np.clip(
                     img_256.max() - img_256.min(), a_min=1e-8, a_max=None
                 )  # normalize to [0, 1], (H, W, 3)s
@@ -576,8 +675,10 @@ def my_model_infer_npz_3D(img_npz_file):
                 low_res_pred = torch.sigmoid(low_res_pred)  
                 low_res_pred = low_res_pred.squeeze().cpu().numpy()  
                 img_2d_seg = (low_res_pred > 0.5).astype(np.uint8)
-            else:
-                img_2d_seg, iou_pred = my_model_inference(my_model_lite_model, image_embedding, box_256, [new_H, new_W], [H, W])
+            elif args.model == 'medsam':
+                img_2d_seg, _ = my_model_inference(my_model_lite_model, image_embedding, box_256, [new_H, new_W], [H, W])
+            #elif args.model == 'th':
+            #    img_2d_seg = th_pred(box_256, img_256, (new_H, new_W), (H, W), th=args.th)
 
 
             segs_3d_temp[z, img_2d_seg>0] = idx
@@ -586,6 +687,8 @@ def my_model_infer_npz_3D(img_npz_file):
         # infer from middle slice to the z_max
         # print(npz_name, 'infer from middle slice to the z_min')
         for z in range(z_middle-1, z_min, -1):
+            if args.model == 'th':
+                break
             img_2d = img_3D[z, :, :]
             if len(img_2d.shape) == 2:
                 img_3c = np.repeat(img_2d[:, :, None], 3, axis=-1)
@@ -624,11 +727,74 @@ def my_model_infer_npz_3D(img_npz_file):
                 low_res_pred = torch.sigmoid(low_res_pred)  
                 low_res_pred = low_res_pred.squeeze().cpu().numpy()  
                 img_2d_seg = (low_res_pred > 0.5).astype(np.uint8)
-            else:
+            elif args.model == 'medsam':
                 img_2d_seg, _ = my_model_inference(my_model_lite_model, image_embedding, box_256, [new_H, new_W], [H, W])
+            #elif args.model == 'th':
+            #    img_2d_seg = th_pred(box_256, img_256, (new_H, new_W), (H, W), th=args.th)
             segs_3d_temp[z, img_2d_seg>0] = idx
 
-        segs[segs_3d_temp>0] = idx
+        if args.model == 'th':
+            segs_3d_temp = (img_3D > args.th) * idx
+        # Omit everything outside the bbox
+        curr_seg = (segs_3d_temp == idx) * 1
+        x_min, y_min, z_max, x_max, y_max, z_max = box3D
+        outside_bbox_mask = np.zeros_like(segs_3d_temp)
+        outside_bbox_mask[z_min:z_max, y_min:y_max, x_min:x_max] = 1
+        # Apply the outside bounding box mask to the output mask
+        curr_seg[outside_bbox_mask == 0] = 0
+        '''
+        if args.model == 'th': # try to push the tumor to bbox ratio between 20% and 80%
+            ratio = np.sum(curr_seg / box_vol(box3D))
+            structuring_element = np.ones((2, 2, 2), dtype=np.uint8)
+
+            if ratio == 0.0: # initialize mask with at least one voxel
+                box_c = box_center(box3D)
+                curr_seg[box_c[2], box_c[1], box_c[0]] = 1
+            if ratio < 0.2:
+                c_ratio = ratio
+                while c_ratio < 0.2:
+                    print('kek')
+                    curr_seg = binary_dilation(curr_seg, structure=structuring_element)
+                    c_ratio = np.sum(curr_seg / box_vol(box3D))
+                if c_ratio >= 1.0:
+                    curr_seg = binary_erosion(curr_seg, structure=structuring_element)
+                    c_ratio = np.sum(curr_seg / box_vol(box3D))
+                if c_ratio == 0:
+                    box_c = box_center(box3D)
+                    curr_seg[box_c[2], box_c[1], box_c[0]] = 1
+
+
+            if ratio > 0.8:
+                c_ratio = ratio
+                while c_ratio > 0.8:
+                    print('top kek')
+                    curr_seg = binary_erosion(curr_seg, structure=structuring_element)
+                    c_ratio = np.sum(curr_seg / box_vol(box3D))
+                if c_ratio == 0:
+                    box_c = box_center(box3D)
+                    curr_seg[box_c[2], box_c[1], box_c[0]] = 1
+        '''
+
+
+        
+        ratios.append(np.sum(curr_seg) / box_vol(box3D))
+        if np.sum(curr_seg) / box_vol(box3D) > 1:
+            print(np.sum(curr_seg), box_vol(box3D))
+            affine = np.eye(4)
+            affine[0][0] = -1
+            ni_img = nib.Nifti1Image(curr_seg.astype(np.uint8) * 255, affine=affine)
+            ni_img.header.get_xyzt_units()
+            ni_img.to_filename(f"pred.nii.gz")
+            ni_img = nib.Nifti1Image(gts.astype(np.uint8) * 255, affine=affine)
+            ni_img.header.get_xyzt_units()
+            ni_img.to_filename(f"gt.nii.gz")
+            print(box3D)
+            exit()
+            
+        if args.model == 'th':
+            segs[curr_seg > 0] = idx
+        else:
+            segs[segs_3d_temp>0] = idx
     np.savez_compressed(
         join(pred_save_dir, npz_name),
         segs=segs,
@@ -666,10 +832,11 @@ if __name__ == '__main__':
     efficiency = OrderedDict()
     efficiency['case'] = []
     efficiency['time'] = []
+    ratios = []
     for img_npz_file in tqdm(img_npz_files):
         start_time = time()
         if basename(img_npz_file).startswith('3D') or basename(img_npz_file).startswith('CT') or basename(img_npz_file).startswith('MR') or basename(img_npz_file).startswith('PET'):
-            my_model_infer_npz_3D(img_npz_file)
+            my_model_infer_npz_3D(img_npz_file, ratios)
         else:
             my_model_infer_npz_2D(img_npz_file)
         end_time = time()
@@ -677,6 +844,8 @@ if __name__ == '__main__':
         efficiency['time'].append(end_time - start_time)
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(current_time, 'file name:', basename(img_npz_file), 'time cost:', np.round(end_time - start_time, 4))
+    np.save('ratios.npy', np.array(ratios))
+    
     print('Average Time:', np.mean(efficiency['time']))
     efficiency_df = pd.DataFrame(efficiency)
     file_path = join(pred_save_dir, 'efficiency.csv')
