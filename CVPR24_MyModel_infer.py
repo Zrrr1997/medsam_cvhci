@@ -95,6 +95,13 @@ parser.add_argument(
     help='percentile thresholding for the PET data',
 )
 
+parser.add_argument(
+    '--filter_background',
+    default=True,
+    action='store_false',
+    help='whether to omit all the predictions outside the bbox'
+)
+
 
 args = parser.parse_args()
 
@@ -738,10 +745,11 @@ def my_model_infer_npz_3D(img_npz_file, ratios):
         # Omit everything outside the bbox
         curr_seg = (segs_3d_temp == idx) * 1
         x_min, y_min, z_max, x_max, y_max, z_max = box3D
-        outside_bbox_mask = np.zeros_like(segs_3d_temp)
-        outside_bbox_mask[z_min:z_max, y_min:y_max, x_min:x_max] = 1
-        # Apply the outside bounding box mask to the output mask
-        curr_seg[outside_bbox_mask == 0] = 0
+        if args.filter_background:
+            outside_bbox_mask = np.zeros_like(segs_3d_temp)
+            outside_bbox_mask[z_min:z_max, y_min:y_max, x_min:x_max] = 1
+            # Apply the outside bounding box mask to the output mask
+            curr_seg[outside_bbox_mask == 0] = 0
         '''
         if args.model == 'th': # try to push the tumor to bbox ratio between 20% and 80%
             ratio = np.sum(curr_seg / box_vol(box3D))
