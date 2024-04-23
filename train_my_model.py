@@ -278,13 +278,14 @@ class NpyDataset(Dataset):
         """
         Expects a numpy array with shape HxWxC in uint8 format.
         """
-        print(image.shape)
         long_side_length = self.target_length
         oldh, oldw = image.shape[0], image.shape[1]
         scale = long_side_length * 1.0 / max(oldh, oldw)
         newh, neww = oldh * scale, oldw * scale
         neww, newh = int(neww + 0.5), int(newh + 0.5)
         target_size = (neww, newh)
+
+        print(image.shape, target_size)
 
         return cv2.resize(image, target_size, interpolation=cv2.INTER_AREA)
 
