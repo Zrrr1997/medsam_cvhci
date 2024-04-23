@@ -224,12 +224,11 @@ class NpyDataset(Dataset):
         bboxes = np.expand_dims(bboxes[random_ind], axis=0) # use one random bbox from all bboxes during training
         box = bboxes[0]
 
+        # expand bounding box to avoid degenerate bboxes
         if (box[3] - box[1]) <= 1:
             box[3] += 1
-            #box[1] -= 1
         if (box[2] - box[0]) <= 1:
             box[2] += 1
-            #box[0] -= 1
 
         img_3c = img_3c[box[1]:box[3], box[0]:box[2]] # Crop image to bounding box
         gt = gt[box[1]:box[3], box[0]:box[2]]
@@ -293,7 +292,6 @@ class NpyDataset(Dataset):
         neww, newh = int(neww + 0.5), int(newh + 0.5)
         target_size = (neww, newh)
 
-        print(image.shape, target_size)
 
         return cv2.resize(image, target_size, interpolation=cv2.INTER_AREA)
 
