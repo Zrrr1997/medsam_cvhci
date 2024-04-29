@@ -46,6 +46,10 @@ parser.add_argument(
     help="Number of epochs to train."
 )
 parser.add_argument(
+    "-seed", type=int, default=0,
+    help="Torch seed for reproducibility"
+)
+parser.add_argument(
     "-batch_size", type=int, default=4,
     help="Batch size."
 )
@@ -114,6 +118,8 @@ parser.add_argument(
     help='Compute False Positives and False Negatives'
 )
 
+
+
 args = parser.parse_args()
 # %%
 work_dir = args.work_dir
@@ -133,6 +139,9 @@ do_sancheck = args.sanity_check
 checkpoint = args.resume
 show_preds = args.show_preds
 compute_fp_fn = args.compute_fp_fn
+
+torch.manual_seed(args.seed)
+
 
 makedirs(work_dir, exist_ok=True)
 
@@ -460,7 +469,7 @@ for epoch in range(start_epoch + 1, num_epochs):
         if show_preds:
             plot_preds(image, gt2D, logits_pred)
         if compute_fp_fn:
-            if epoch > start_epoch + 1:
+            if epoch > start_epoch + 1 or step > 100:
                 print('FP', np.nanmean(fps))
                 print('FN', np.nanmean(fns))
                 exit()
@@ -470,8 +479,6 @@ for epoch in range(start_epoch + 1, num_epochs):
             fp = (gt != low_res_pred) * (gt == 0)
             fn = (gt != low_res_pred) * (gt != 0)
             vol = (gt.shape[0] * gt.shape[1] * gt.shape[2] * gt.shape[3])
-            print(np.sum(fp) / vol)
-            print(np.sum(fn) / vol)
             fps.append(np.sum(fp) / vol)
             fns.append(np.sum(fn) / vol)
 
