@@ -165,7 +165,7 @@ def resize_longest_side(image, target_length=256):
     scale = target_length * 1.0 / max(oldh, oldw)
     newh, neww = oldh * scale, oldw * scale
     neww, newh = int(neww + 0.5), int(newh + 0.5)
-    target_size = (neww, newh)
+    target_size = (max(neww, 2), max(newh, 2))
     return cv2.resize(image, target_size, interpolation=cv2.INTER_AREA)
 
 def pad_image(image, target_size=256):
@@ -191,18 +191,12 @@ def kmean(img, k=3):
     img = np.float32(img)
 
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
-# number of clusters (K)
+    # number of clusters (K)
     
     _, labels, (centers) = cv2.kmeans(img, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
 
     labels = labels.reshape(or_shape[0], or_shape[1], 1)
-    rad = 10
-    context = labels[int(or_shape[0]/2)-rad:int(or_shape[0]/2)+rad,int(or_shape[1]/2)-rad:int(or_shape[1]/2)+rad,:]
-    _, counts = np.unique(context, return_counts=True)
 
-    dom_class = np.argmax(counts)    
-    labels = (labels == dom_class) * 1
-    
 
     return labels
 
@@ -331,27 +325,6 @@ def get_bbox256(mask_256, bbox_shift=3):
 
     return bboxes256
 
-def enlarge_bbox(bbox):
-    # Calculate differences in each dimension
-    bbox = list(bbox)
-    x_diff = bbox[2] - bbox[0]
-    y_diff = bbox[3] - bbox[1]
-    
-    # Find the maximum difference
-    max_diff = min(x_diff, y_diff)
-    
-    # Enlarge the bounding box if the maximum difference is not larger than 1
-    if max_diff <= 1:
-        # Enlarge the bounding box by 1 in the maximum dimension
-        bbox[2] += 1  # x_max
-        bbox[3] += 1  # y_max
-
-        bbox[0] -= 1  # x_max
-        bbox[1] -= 1  # y_max
-            
-    bbox = [el if el >= 0 else el + 1 for el in bbox]
-    
-    return np.array(bbox)
 
 def resize_box_to_256(box, original_size):
     """
@@ -556,12 +529,9 @@ def my_model_infer_npz_2D(img_npz_file):
     if args.model == 'medsam':
         with torch.no_grad():
             img_256_tensor = torch.tensor(img_256_padded).float().permute(2, 0, 1).unsqueeze(0).to(device) # (B, 3, 256, 256)
-
             image_embedding = my_model_lite_model.image_encoder(img_256_tensor)
 
     for idx, box in enumerate(boxes, start=1):
-
-        
         box256 = resize_box_to_256(box, original_size=(H, W)) 
         
 
@@ -569,18 +539,20 @@ def my_model_infer_npz_2D(img_npz_file):
             my_model_mask = grabcut_pred(box256, segs, img_256_padded_non_norm, (newh, neww), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
 
         elif args.model == 'mobileunet':
+            rgb = [np.sum(img_3c[:,:,i]) for i in range(3)]
+            bbox = list(box)
+
+            # Avoid empty bounding boxes
+            if bbox[2] - bbox[0] <= 1:
+                bbox[2] += 1
+                bbox[0] -= 1
+                bbox[0] = max(0, bbox[0])
+            if bbox[3] - bbox[1] <= 1:
+                bbox[3] += 1
+                bbox[1] -= 1
+                bbox[1] = max(0, bbox[1])
             
 
-            rgb = [np.sum(img_3c[:,:,i]) for i in range(3)]
-            bbox = box
-            '''
-            if (box[3] - box[1]) <= 1:
-                continue
-                bbox[3] += 1
-                
-            if (box[2] - box[0]) <= 1:
-                bbox[2] += 1
-            '''
             img_3c_input = img_3c[bbox[1]:bbox[3], bbox[0]:bbox[2]] # Crop image to bounding box
             H, W = img_3c_input.shape[:2]
 
@@ -600,15 +572,18 @@ def my_model_infer_npz_2D(img_npz_file):
                 kmeans_mask = kmean(img_3c_input, k=k).astype(np.uint8)  
                 sh = kmeans_mask.shape
                 
-                center_context = np.mean(kmeans_mask[int(sh[0]/2)-5:int(sh[0]/2)+5,int(sh[1]/2)-5:int(sh[1]/2)+5,:])
-           
-                if center_context < 0.5: # invert prediction if the central structure is considered as background
+                corner_context = np.mean(kmeans_mask[:5, :5]) + np.mean(kmeans_mask[-5:, :5]) + np.mean(kmeans_mask[-5:, -5:]) +  + np.mean(kmeans_mask[:5, -5:])
+                corner_context /= 4
+
+                if corner_context > 0.5: # invert prediction if the central structure is considered as background
                     kmeans_mask = np.logical_not(kmeans_mask).astype(np.uint8)
                 kmeans_mask = largest_connected_component(kmeans_mask).astype(np.uint8)
 
                 temp_pred = np.zeros_like(segs).astype(np.uint16)
 
                 temp_pred[bbox[1]:bbox[3], bbox[0]:bbox[2]] = kmeans_mask[:,:,0]
+
+                temp_pred = largest_connected_component(temp_pred).astype(np.uint8)
                 
 
             else:
@@ -621,14 +596,12 @@ def my_model_infer_npz_2D(img_npz_file):
                 my_model_mask = (low_res_pred > 0.5).astype(np.uint16)
 
                 my_model_mask = largest_connected_component(my_model_mask)
-                
-                #my_model_mask = binary_closing(my_model_mask)
-                #print('clsing')
-
-
+        
                 temp_pred = np.zeros_like(segs).astype(np.uint16)
                 
                 temp_pred[bbox[1]:bbox[3], bbox[0]:bbox[2]] = my_model_mask
+                temp_pred = largest_connected_component(temp_pred).astype(np.uint8)
+
 
 
 
@@ -638,9 +611,9 @@ def my_model_infer_npz_2D(img_npz_file):
             box256 = box256[None, ...] # (1, 4)
             my_model_mask, _ = my_model_inference(my_model_lite_model, image_embedding, box256, (newh, neww), (H, W))
         if args.debug_vis:
-            cv2.imshow('img', cv2.resize(img_3c[box[1]:box[3], box[0]:box[2]], (256, 256), interpolation=cv2.INTER_AREA))
+            cv2.imshow('img', cv2.resize(img_3c[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256, 256), interpolation=cv2.INTER_AREA))
             if args.model == 'mobileunet':
-                cv2.imshow('test', cv2.resize(((temp_pred>0) * 255).astype(np.uint8)[box[1]:box[3], box[0]:box[2]], (256,256), interpolation=cv2.INTER_AREA))
+                cv2.imshow('test', cv2.resize(((temp_pred>0) * 255).astype(np.uint8)[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256,256), interpolation=cv2.INTER_AREA))
                 #cv2.imshow('gts', cv2.resize(((gts) ).astype(np.uint8)[box[1]:box[3], box[0]:box[2]], (256,256), interpolation=cv2.INTER_AREA))
 
             elif args.model == 'medsam':

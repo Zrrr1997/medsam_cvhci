@@ -107,6 +107,13 @@ parser.add_argument(
     help='Crop image with a random bbox to train'
 )
 
+parser.add_argument(
+    '--compute_fp_fn',
+    default=False,
+    action='store_true',
+    help='Compute False Positives and False Negatives'
+)
+
 args = parser.parse_args()
 # %%
 work_dir = args.work_dir
@@ -125,6 +132,7 @@ ce_loss_weight = args.ce_loss_weight
 do_sancheck = args.sanity_check
 checkpoint = args.resume
 show_preds = args.show_preds
+compute_fp_fn = args.compute_fp_fn
 
 makedirs(work_dir, exist_ok=True)
 
@@ -422,6 +430,8 @@ else:
     best_loss = 1e10
 # %%
 train_losses = []
+fps, fns = [], []
+
 for epoch in range(start_epoch + 1, num_epochs):
     epoch_loss = [1e10 for _ in range(len(train_loader))]
     epoch_start_time = time()
@@ -436,6 +446,7 @@ for epoch in range(start_epoch + 1, num_epochs):
         
 
         logits_pred = model(image) 
+        
         l_seg = seg_loss(logits_pred, gt2D)
         l_ce = ce_loss(logits_pred, gt2D.float())
         loss = seg_loss_weight * l_seg + ce_loss_weight * l_ce
@@ -448,6 +459,23 @@ for epoch in range(start_epoch + 1, num_epochs):
 
         if show_preds:
             plot_preds(image, gt2D, logits_pred)
+        if compute_fp_fn:
+            if epoch > start_epoch + 1:
+                print('FP', np.nanmean(fps))
+                print('FN', np.nanmean(fns))
+                exit()
+            low_res_pred = torch.sigmoid(logits_pred)  
+            low_res_pred = (low_res_pred.squeeze().detach().numpy() > 0.5)
+            gt = gt2D.detach().numpy()
+            fp = (gt != low_res_pred) * (gt == 0)
+            fn = (gt != low_res_pred) * (gt != 0)
+            vol = (gt.shape[0] * gt.shape[1] * gt.shape[2] * gt.shape[3])
+            print(np.sum(fp) / vol)
+            print(np.sum(fn) / vol)
+            fps.append(np.sum(fp) / vol)
+            fns.append(np.sum(fn) / vol)
+
+
 
     epoch_end_time = time()
     epoch_loss_reduced = sum(epoch_loss) / len(epoch_loss)
