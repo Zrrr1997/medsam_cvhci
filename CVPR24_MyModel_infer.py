@@ -571,11 +571,16 @@ def my_model_infer_npz_2D(img_npz_file):
                 k = 2
                 kmeans_mask = kmean(img_3c_input, k=k).astype(np.uint8)  
                 sh = kmeans_mask.shape
-                
-                corner_context = np.mean(kmeans_mask[:5, :5]) + np.mean(kmeans_mask[-5:, :5]) + np.mean(kmeans_mask[-5:, -5:]) +  + np.mean(kmeans_mask[:5, -5:])
-                corner_context /= 4
 
-                if corner_context > 0.5: # invert prediction if the central structure is considered as background
+                center_context = np.mean(kmeans_mask[int(sh[0]/2)-5:int(sh[0]/2)+5,int(sh[1]/2)-5:int(sh[1]/2)+5,:])
+           
+                if center_context < 0.5: # invert prediction if the central structure is considered as background
+                    kmeans_mask = np.logical_not(kmeans_mask).astype(np.uint8)
+
+                #corner_context = np.mean(kmeans_mask[:5, :5]) + np.mean(kmeans_mask[-5:, :5]) + np.mean(kmeans_mask[-5:, -5:]) +  + np.mean(kmeans_mask[:5, -5:])
+                #corner_context /= 4
+
+                if center_context < 0.5: # invert prediction if the central structure is considered as background
                     kmeans_mask = np.logical_not(kmeans_mask).astype(np.uint8)
                 kmeans_mask = largest_connected_component(kmeans_mask).astype(np.uint8)
 
