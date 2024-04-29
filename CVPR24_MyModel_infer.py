@@ -1,10 +1,13 @@
 from os import makedirs
 from os.path import join, basename
-from scipy.ndimage import binary_dilation, binary_erosion
+from scipy.ndimage import binary_dilation, binary_erosion, binary_fill_holes, binary_closing
 
 import os
 import nibabel as nib
 import gc
+
+
+from sklearn.cluster import KMeans
 
 from glob import glob
 from tqdm import tqdm
@@ -52,7 +55,7 @@ parser.add_argument(
 parser.add_argument(
     '-my_model',
     type=str,
-    default="work_dir/LiteMedSAM/lite_medsam.pth",
+    default=None,
     help='path to the checkpoint of my_model-Lite',
 )
 parser.add_argument(
@@ -72,6 +75,12 @@ parser.add_argument(
     default=False,
     action='store_true',
     help='whether to save the overlay image'
+)
+parser.add_argument(
+    '--debug_vis',
+    default=False,
+    action='store_true',
+    help='visualize predictions to debug'
 )
 parser.add_argument(
     '-png_save_dir',
@@ -175,6 +184,46 @@ def pad_image(image, target_size=256):
 
     return image_padded
 
+def kmean(img, k=3):
+
+    or_shape = img.shape
+    img = img.reshape((-1, 3))
+    img = np.float32(img)
+
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
+# number of clusters (K)
+    
+    _, labels, (centers) = cv2.kmeans(img, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+
+    labels = labels.reshape(or_shape[0], or_shape[1], 1)
+    rad = 10
+    context = labels[int(or_shape[0]/2)-rad:int(or_shape[0]/2)+rad,int(or_shape[1]/2)-rad:int(or_shape[1]/2)+rad,:]
+    _, counts = np.unique(context, return_counts=True)
+
+    dom_class = np.argmax(counts)    
+    labels = (labels == dom_class) * 1
+    
+
+    return labels
+
+
+def largest_connected_component(segmentation):
+    connected_components = cc3d.connected_components(segmentation, connectivity=26)
+
+    max_size = 0
+    largest_label = None
+    for label in np.unique(connected_components)[1:]:  # Skip background label 0
+        size = np.sum(label == connected_components)
+        if size >= max_size:
+            max_size = size
+            largest_label = label
+
+    
+    largest_ccp = (((connected_components == largest_label)) * 1).astype(np.uint16)
+
+    largest_ccp = binary_fill_holes(largest_ccp)
+
+    return largest_ccp
 
 @torch.no_grad()
 def postprocess_masks(masks, new_size, original_size):
@@ -420,6 +469,11 @@ if args.model == 'medsam':
     my_model_lite_model.eval()
 elif args.model == 'mobileunet':
     my_model = MobileUNet()
+    if args.my_model is not None:
+        my_model_checkpoint = torch.load(args.my_model, map_location='cpu')
+        my_model.load_state_dict(my_model_checkpoint['model'])
+        my_model.to(device)
+        my_model.eval()
 
 
 
@@ -465,6 +519,8 @@ def my_model_infer_npz_2D(img_npz_file):
     npz_name = basename(img_npz_file)
     npz_data = np.load(img_npz_file, 'r', allow_pickle=True) # (H, W, 3)
     img_3c = npz_data['imgs'] # (H, W, 3)
+
+
     assert np.max(img_3c)<256, f'input data should be in range [0, 255], but got {np.unique(img_3c)}'
     H, W = img_3c.shape[:2]
     if 'boxes' in npz_data.keys():
@@ -481,18 +537,20 @@ def my_model_infer_npz_2D(img_npz_file):
             boxes.append(bounding_box)
 
 
-    segs = np.zeros(img_3c.shape[:2], dtype=np.uint8)
+    segs = np.zeros(img_3c.shape[:2], dtype=np.uint16)
 
-    ## preprocessing
-    img_256 = resize_longest_side(img_3c, 256)
-    newh, neww = img_256.shape[:2]
-    
-    img_256_norm = (img_256 - img_256.min()) / np.clip(
-        img_256.max() - img_256.min(), a_min=1e-8, a_max=None
-    )
-    
-    img_256_padded_non_norm = pad_image(img_256, 256).astype(np.uint8)
-    img_256_padded = pad_image(img_256_norm, 256)
+    if args.model != 'mobileunet':
+
+        ## preprocessing
+        img_256 = resize_longest_side(img_3c, 256)
+        newh, neww = img_256.shape[:2]
+        
+        img_256_norm = (img_256 - img_256.min()) / np.clip(
+            img_256.max() - img_256.min(), a_min=1e-8, a_max=None
+        )
+        
+        img_256_padded_non_norm = pad_image(img_256, 256).astype(np.uint8)
+        img_256_padded = pad_image(img_256_norm, 256)
 
 
     if args.model == 'medsam':
@@ -502,6 +560,8 @@ def my_model_infer_npz_2D(img_npz_file):
             image_embedding = my_model_lite_model.image_encoder(img_256_tensor)
 
     for idx, box in enumerate(boxes, start=1):
+
+        
         box256 = resize_box_to_256(box, original_size=(H, W)) 
         
 
@@ -509,22 +569,91 @@ def my_model_infer_npz_2D(img_npz_file):
             my_model_mask = grabcut_pred(box256, segs, img_256_padded_non_norm, (newh, neww), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
 
         elif args.model == 'mobileunet':
+            
 
-            my_model_mask = my_model(torch.Tensor(img_256_padded_non_norm.transpose(2, 1, 0)).unsqueeze(0))
+            rgb = [np.sum(img_3c[:,:,i]) for i in range(3)]
+            bbox = box
+            '''
+            if (box[3] - box[1]) <= 1:
+                continue
+                bbox[3] += 1
+                
+            if (box[2] - box[0]) <= 1:
+                bbox[2] += 1
+            '''
+            img_3c_input = img_3c[bbox[1]:bbox[3], bbox[0]:bbox[2]] # Crop image to bounding box
+            H, W = img_3c_input.shape[:2]
 
-            low_res_pred = postprocess_masks(my_model_mask, (newh, neww), (H, W))
-            low_res_pred = torch.sigmoid(low_res_pred)  
-            low_res_pred = low_res_pred.squeeze().cpu().numpy()  
-            my_model_mask = (low_res_pred > 0.5).astype(np.uint8)
+            ## preprocessing
+            img_256 = resize_longest_side(img_3c_input, 256)
+            newh, neww = img_256.shape[:2]
+            
+            img_256_norm = (img_256 - img_256.min()) / np.clip(
+                img_256.max() - img_256.min(), a_min=1e-8, a_max=None
+            )
+            
+            img_256_padded = pad_image(img_256_norm, 256)
+
+            if 'Microscopy' in img_npz_file and ((len([el for el in rgb if el == 0]) == 1) or (np.sum(img_3c[:,:,0] - img_3c[:,:,1]) == 0)):
+
+                k = 2
+                kmeans_mask = kmean(img_3c_input, k=k).astype(np.uint8)  
+                sh = kmeans_mask.shape
+                
+                center_context = np.mean(kmeans_mask[int(sh[0]/2)-5:int(sh[0]/2)+5,int(sh[1]/2)-5:int(sh[1]/2)+5,:])
+           
+                if center_context < 0.5: # invert prediction if the central structure is considered as background
+                    kmeans_mask = np.logical_not(kmeans_mask).astype(np.uint8)
+                kmeans_mask = largest_connected_component(kmeans_mask).astype(np.uint8)
+
+                temp_pred = np.zeros_like(segs).astype(np.uint16)
+
+                temp_pred[bbox[1]:bbox[3], bbox[0]:bbox[2]] = kmeans_mask[:,:,0]
+                
+
+            else:
+
+                my_model_mask = my_model(torch.Tensor(img_256_padded.transpose(2, 0, 1)).unsqueeze(0))
+
+                low_res_pred = postprocess_masks(my_model_mask, (newh, neww), (H, W))
+                low_res_pred = torch.sigmoid(low_res_pred)  
+                low_res_pred = low_res_pred.squeeze().cpu().numpy()  
+                my_model_mask = (low_res_pred > 0.5).astype(np.uint16)
+
+                my_model_mask = largest_connected_component(my_model_mask)
+                
+                #my_model_mask = binary_closing(my_model_mask)
+                #print('clsing')
+
+
+                temp_pred = np.zeros_like(segs).astype(np.uint16)
+                
+                temp_pred[bbox[1]:bbox[3], bbox[0]:bbox[2]] = my_model_mask
+
+
+
     
 
         elif args.model == 'medsam':
             box256 = box256[None, ...] # (1, 4)
             my_model_mask, _ = my_model_inference(my_model_lite_model, image_embedding, box256, (newh, neww), (H, W))
+        if args.debug_vis:
+            cv2.imshow('img', cv2.resize(img_3c[box[1]:box[3], box[0]:box[2]], (256, 256), interpolation=cv2.INTER_AREA))
+            if args.model == 'mobileunet':
+                cv2.imshow('test', cv2.resize(((temp_pred>0) * 255).astype(np.uint8)[box[1]:box[3], box[0]:box[2]], (256,256), interpolation=cv2.INTER_AREA))
+                #cv2.imshow('gts', cv2.resize(((gts) ).astype(np.uint8)[box[1]:box[3], box[0]:box[2]], (256,256), interpolation=cv2.INTER_AREA))
 
-        if idx > 255:
-            print(f'[WARNING] Index {idx} is overflowing in the segmentation mask!')
-        segs[my_model_mask>0] = idx
+            elif args.model == 'medsam':
+                cv2.imshow('test', cv2.resize(((my_model_mask[box[1]:box[3], box[0]:box[2]]>0) * 255).astype(np.uint8), (256,256), interpolation=cv2.INTER_AREA))
+
+            cv2.waitKey(0)
+            #cv2.destroyAllWindows()
+        
+
+        if args.model == "mobileunet":
+            segs[temp_pred>0] = idx
+        else:
+            segs[my_model_mask>0] = idx
         gc.collect()
         # print(f'{npz_name}, box: {box}, predicted iou: {np.round(iou_pred.item(), 4)}')
     np.savez_compressed(
@@ -645,7 +774,7 @@ def my_model_infer_npz_3D(img_npz_file):
                 low_res_pred = postprocess_masks(img_2d_seg, [new_H, new_W], (H, W))
                 low_res_pred = torch.sigmoid(low_res_pred)  
                 low_res_pred = low_res_pred.squeeze().cpu().numpy()  
-                img_2d_seg = (low_res_pred > 0.5).astype(np.uint8)
+                img_2d_seg = (low_res_pred > 0.5).astype(np.uint16)
             elif args.model == 'medsam':
                 img_2d_seg, _ = my_model_inference(my_model_lite_model, image_embedding, box_256, [new_H, new_W], [H, W])
 

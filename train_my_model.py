@@ -100,6 +100,13 @@ parser.add_argument(
     help='Show predictions of the model'
 )
 
+parser.add_argument(
+    '--crop_instances',
+    default=False,
+    action='store_true',
+    help='Crop image with a random bbox to train'
+)
+
 args = parser.parse_args()
 # %%
 work_dir = args.work_dir
@@ -234,8 +241,9 @@ class NpyDataset(Dataset):
         if (box[2] - box[0]) <= 1:
             box[2] += 1
 
-        img_3c = img_3c[box[1]:box[3], box[0]:box[2]] # Crop image to bounding box
-        gt = gt[box[1]:box[3], box[0]:box[2]]
+        if args.crop_instances:
+            img_3c = img_3c[box[1]:box[3], box[0]:box[2]] # Crop image to bounding box
+            gt = gt[box[1]:box[3], box[0]:box[2]]
 
 
 
@@ -258,7 +266,10 @@ class NpyDataset(Dataset):
 
         label_ids = np.unique(gt)[1:]
         try:
-            gt2D = np.uint8(gt == random.choice(label_ids.tolist())) # only one label, (256, 256)
+            if args.crop_instances:
+                gt2D = np.uint8(gt == random.choice(label_ids.tolist())) # only one label, (256, 256)
+            else:
+                gt2D = (gt > 0).astype(np.uint8)
         except:
             print(img_name, 'label_ids.tolist()', label_ids.tolist())
             gt2D = np.uint8(gt == np.max(gt)) # only one label, (256, 256)
