@@ -199,7 +199,7 @@ def plot_preds(image, gt2D, logits_pred):
     low_res_pred = torch.sigmoid(logits_pred)  
     low_res_pred = low_res_pred.squeeze().detach().numpy()  
     my_model_mask = (low_res_pred > 0.5).astype(np.uint8)
-    axes[2].imshow(my_model_mask[0], cmap='gray')
+    axes[2].imshow(my_model_mask, cmap='gray')
     axes[2].set_title('Logits Pred')
     axes[2].axis('off')
 
@@ -208,7 +208,7 @@ def plot_preds(image, gt2D, logits_pred):
 
 # %%
 class NpyDataset(Dataset): 
-    def __init__(self, data_root, image_size=256, bbox_shift=5, data_aug=True):
+    def __init__(self, data_root, image_size=256, bbox_shift=0, data_aug=False):
         self.data_root = data_root
         self.gt_path = join(data_root, 'gts')
         self.img_path = join(data_root, 'imgs')
@@ -345,7 +345,7 @@ class NpyDataset(Dataset):
 
 #%% sanity test of dataset class
 if do_sancheck:
-    tr_dataset = NpyDataset(data_root, data_aug=True)
+    tr_dataset = NpyDataset(data_root, data_aug=False)
     tr_dataloader = DataLoader(tr_dataset, batch_size=8, shuffle=True)
     for step, batch in enumerate(tr_dataloader):
         # show the example
@@ -423,7 +423,7 @@ lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
 seg_loss = monai.losses.DiceLoss(sigmoid=True, squared_pred=True, reduction='mean')
 ce_loss = nn.BCEWithLogitsLoss(reduction='mean')
 # %%
-train_dataset = NpyDataset(data_root=data_root, data_aug=True)
+train_dataset = NpyDataset(data_root=data_root, data_aug=False)
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
 
 if checkpoint and isfile(checkpoint):

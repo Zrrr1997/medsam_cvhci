@@ -15,6 +15,7 @@ from time import time
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 
 from segment_anything.modeling import MaskDecoder, PromptEncoder, TwoWayTransformer
 from tiny_vit_sam import TinyViT
@@ -152,6 +153,7 @@ if save_overlay:
     makedirs(png_save_dir, exist_ok=True)
 
 my_model = args.my_model
+
 makedirs(pred_save_dir, exist_ok=True)
 device = torch.device(args.device)
 image_size = 256
@@ -448,6 +450,8 @@ elif args.model == 'mobileunet':
         my_model.to(device)
         my_model.eval()
 
+my_second_model = my_model
+models = [my_model, my_second_model]
 
 
 def grabcut_pred(rect, mask, image, new_size, original_size):
@@ -593,8 +597,10 @@ def my_model_infer_npz_2D(img_npz_file):
 
             else:
 
-                my_model_mask = my_model(torch.Tensor(img_256_padded.transpose(2, 0, 1)).unsqueeze(0))
-
+                #my_model_mask = my_model(torch.Tensor(img_256_padded.transpose(2, 0, 1)).unsqueeze(0))
+                my_model_mask = nn.parallel.data_parallel(models, torch.Tensor(img_256_padded.transpose(2, 0, 1)).unsqueeze(0))
+                print(my_model_mask.shape)
+                exit()
                 low_res_pred = postprocess_masks(my_model_mask, (newh, neww), (H, W))
                 low_res_pred = torch.sigmoid(low_res_pred)  
                 low_res_pred = low_res_pred.squeeze().cpu().numpy()  
