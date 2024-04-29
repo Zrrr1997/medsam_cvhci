@@ -465,7 +465,7 @@ for epoch in range(start_epoch + 1, num_epochs):
                 print('FN', np.nanmean(fns))
                 exit()
             low_res_pred = torch.sigmoid(logits_pred)  
-            low_res_pred = (low_res_pred.squeeze().detach().numpy() > 0.5)
+            low_res_pred = (low_res_pred.squeeze().cpu().detach().numpy() > 0.5)
             gt = gt2D.detach().numpy()
             fp = (gt != low_res_pred) * (gt == 0)
             fn = (gt != low_res_pred) * (gt != 0)
