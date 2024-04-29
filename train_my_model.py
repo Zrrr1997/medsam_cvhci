@@ -141,7 +141,8 @@ show_preds = args.show_preds
 compute_fp_fn = args.compute_fp_fn
 
 torch.manual_seed(args.seed)
-
+torch.cuda.manual_seed(args.seed)
+np.random.seed(args.seed)
 
 makedirs(work_dir, exist_ok=True)
 

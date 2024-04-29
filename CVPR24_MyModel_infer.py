@@ -5,6 +5,7 @@ from scipy.ndimage import binary_dilation, binary_erosion, binary_fill_holes, bi
 import os
 import nibabel as nib
 import gc
+import threading
 
 
 from sklearn.cluster import KMeans
@@ -141,7 +142,7 @@ import resource
 if not args.save_overlay:
     # Set the soft limit for memory usage to 8GB (8 * 1024 * 1024 * 1024 bytes)
     soft, hard = 8 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024
-    resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
+    #resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
 
 data_root = args.input_dir
 pred_save_dir = args.output_dir
@@ -450,8 +451,12 @@ elif args.model == 'mobileunet':
         my_model.to(device)
         my_model.eval()
 
+def infer_mobileunet(model, data, res):
+    with torch.no_grad():
+        res.append(model(data))
+
 my_second_model = my_model
-models = [my_model, my_second_model]
+models = [my_model.eval(), my_second_model.eval()]
 
 
 def grabcut_pred(rect, mask, image, new_size, original_size):
@@ -597,10 +602,20 @@ def my_model_infer_npz_2D(img_npz_file):
 
             else:
 
-                #my_model_mask = my_model(torch.Tensor(img_256_padded.transpose(2, 0, 1)).unsqueeze(0))
-                my_model_mask = nn.parallel.data_parallel(models, torch.Tensor(img_256_padded.transpose(2, 0, 1)).unsqueeze(0))
-                print(my_model_mask.shape)
-                exit()
+                my_model_mask = my_model(torch.Tensor(img_256_padded.transpose(2, 0, 1)).unsqueeze(0))
+                '''
+                input_tensor = torch.Tensor(img_256_padded.transpose(2, 0, 1)).unsqueeze(0)
+                results1, results2 = [], []
+            
+                thread1 = threading.Thread(target=infer_mobileunet, args=(models[0], input_tensor, results1))
+                thread2 = threading.Thread(target=infer_mobileunet, args=(models[1], input_tensor, results2))
+                thread1.start()
+                thread2.start()
+
+                # Wait for the threads to finish
+                thread1.join()
+                thread2.join()
+                '''
                 low_res_pred = postprocess_masks(my_model_mask, (newh, neww), (H, W))
                 low_res_pred = torch.sigmoid(low_res_pred)  
                 low_res_pred = low_res_pred.squeeze().cpu().numpy()  
