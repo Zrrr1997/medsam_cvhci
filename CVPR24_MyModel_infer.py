@@ -3,12 +3,11 @@ from os.path import join, basename
 from scipy.ndimage import binary_dilation, binary_erosion, binary_fill_holes, binary_closing
 
 import os
-import nibabel as nib
 import gc
 import threading
+from scipy.ndimage.morphology import distance_transform_edt
+from scipy.interpolate import interpn
 
-
-from sklearn.cluster import KMeans
 
 from glob import glob
 from tqdm import tqdm
@@ -16,7 +15,8 @@ from time import time
 import numpy as np
 import torch
 import torch.nn.functional as F
-import torch.nn as nn
+import torch.nn as nn\
+
 
 from segment_anything.modeling import MaskDecoder, PromptEncoder, TwoWayTransformer
 from tiny_vit_sam import TinyViT
@@ -455,8 +455,8 @@ def infer_mobileunet(model, data, res):
     with torch.no_grad():
         res.append(model(data))
 
-my_second_model = my_model
-models = [my_model.eval(), my_second_model.eval()]
+#my_second_model = my_model
+#models = [my_model.eval(), my_second_model.eval()]
 
 
 def grabcut_pred(rect, mask, image, new_size, original_size):
@@ -680,6 +680,123 @@ def my_model_infer_npz_2D(img_npz_file):
         plt.close()
     gc.collect()
 
+def ndgrid(*args,**kwargs):
+    """
+    Same as calling ``meshgrid`` with *indexing* = ``'ij'`` (see
+    ``meshgrid`` for documentation).
+    """
+    kwargs['indexing'] = 'ij'
+    return np.meshgrid(*args,**kwargs)
+
+def bwperim(bw, n=4):
+    """
+    perim = bwperim(bw, n=4)
+    Find the perimeter of objects in binary images.
+    A pixel is part of an object perimeter if its value is one and there
+    is at least one zero-valued pixel in its neighborhood.
+    By default the neighborhood of a pixel is 4 nearest pixels, but
+    if `n` is set to 8 the 8 nearest pixels will be considered.
+    Parameters
+    ----------
+      bw : A black-and-white image
+      n : Connectivity. Must be 4 or 8 (default: 8)
+    Returns
+    -------
+      perim : A boolean image
+
+    From Mahotas: http://nullege.com/codes/search/mahotas.bwperim
+    """
+
+    if n not in (4,8):
+        raise ValueError('mahotas.bwperim: n must be 4 or 8')
+    rows,cols = bw.shape
+
+    # Translate image by one pixel in all directions
+    north = np.zeros((rows,cols))
+    south = np.zeros((rows,cols))
+    west = np.zeros((rows,cols))
+    east = np.zeros((rows,cols))
+
+    north[:-1,:] = bw[1:,:]
+    south[1:,:]  = bw[:-1,:]
+    west[:,:-1]  = bw[:,1:]
+    east[:,1:]   = bw[:,:-1]
+    idx = (north == bw) & \
+          (south == bw) & \
+          (west  == bw) & \
+          (east  == bw)
+    if n == 8:
+        north_east = np.zeros((rows, cols))
+        north_west = np.zeros((rows, cols))
+        south_east = np.zeros((rows, cols))
+        south_west = np.zeros((rows, cols))
+        north_east[:-1, 1:]   = bw[1:, :-1]
+        north_west[:-1, :-1] = bw[1:, 1:]
+        south_east[1:, 1:]     = bw[:-1, :-1]
+        south_west[1:, :-1]   = bw[:-1, 1:]
+        idx &= (north_east == bw) & \
+               (south_east == bw) & \
+               (south_west == bw) & \
+               (north_west == bw)
+    return ~idx * bw
+
+def signed_bwdist(im):
+    '''
+    Find perim and return masked image (signed/reversed)
+    '''    
+    im = -bwdist(bwperim(im))*np.logical_not(im) + bwdist(bwperim(im))*im
+    return im
+
+def bwdist(im):
+    '''
+    Find distance map of image
+    '''
+    dist_im = distance_transform_edt(1-im)
+    return dist_im
+
+def interp_shape(top, bottom, precision):
+    '''
+    Interpolate between two contours
+
+    Input: top 
+            [X,Y] - Image of top contour (mask)
+           bottom
+            [X,Y] - Image of bottom contour (mask)
+           precision
+             float  - % between the images to interpolate 
+                Ex: num=0.5 - Interpolate the middle image between top and bottom image
+    Output: out
+            [X,Y] - Interpolated image at num (%) between top and bottom
+
+    '''
+    if precision>2:
+        print("Error: Precision must be between 0 and 1 (float)")
+
+    top = signed_bwdist(top)
+    bottom = signed_bwdist(bottom)
+
+    # row,cols definition
+    r, c = top.shape
+
+    # Reverse % indexing
+    precision = 1+precision
+
+    # rejoin top, bottom into a single array of shape (2, r, c)
+    top_and_bottom = np.stack((top, bottom))
+
+    # create ndgrids 
+    points = (np.r_[0, 2], np.arange(r), np.arange(c))
+    xi = np.rollaxis(np.mgrid[:r, :c], 0, 3).reshape((r**2, 2))
+    xi = np.c_[np.full((r**2),precision), xi]
+
+    # Interpolate for new plane
+    out = interpn(points, top_and_bottom, xi)
+    out = out.reshape((r, c))
+
+    # Threshold distmap to values above 0
+    out = out > 0
+
+    return out
 
 def compute_3d_bounding_boxes(binary_mask):
 
@@ -727,8 +844,18 @@ def my_model_infer_npz_3D(img_npz_file):
 
         # infer from middle slice to the z_max
         # print(npz_name, 'infer from middle slice to the z_max')
+        sampling_rate = 2
+        sampled_z = np.arange(z_middle, max(z_max, z_middle+1), sampling_rate).astype(np.uint16)
+        if max(z_max, z_middle) not in sampled_z:
+            sampled_z = np.append(sampled_z, max(z_max, z_middle))
+
+
         for z in range(z_middle, max(z_max, z_middle+1)):
-            if args.model == 'th':
+
+            if z not in sampled_z:
+                continue
+
+            if args.model == 'th': # No slice-wise inference for thresholds
                 break
             img_2d = img_3D[z, :, :]
             if len(img_2d.shape) == 2:
@@ -740,20 +867,21 @@ def my_model_infer_npz_3D(img_npz_file):
             img_256 = resize_longest_side(img_3c, 256)
             new_H, new_W = img_256.shape[:2]
 
-            if not args.model == 'grabcut' and not args.model == 'th':
+            if not args.model == 'grabcut' and not args.model == 'th': 
                 img_256 = (img_256 - img_256.min()) / np.clip(
                     img_256.max() - img_256.min(), a_min=1e-8, a_max=None
-                )  # normalize to [0, 1], (H, W, 3)s
+                )  # normalize to [0, 1], (H, W, 3)
             ## Pad image to 256x256
             img_256 = pad_image(img_256)
             
 
             if args.model == 'medsam':
-                # convert the shape to (3, H, W)
-                img_256_tensor = torch.tensor(img_256).float().permute(2, 0, 1).unsqueeze(0).to(device)
-                # get the image embedding
-                with torch.no_grad():
-                    image_embedding = my_model_lite_model.image_encoder(img_256_tensor) # (1, 256, 64, 64)
+                if z in sampled_z: 
+                    # convert the shape to (3, H, W)
+                    img_256_tensor = torch.tensor(img_256).float().permute(2, 0, 1).unsqueeze(0).to(device)
+                    # get the image embedding
+                    with torch.no_grad():
+                        image_embedding = my_model_lite_model.image_encoder(img_256_tensor) # (1, 256, 64, 64)
             if z == z_middle:
                 box_256 = resize_box_to_256(mid_slice_bbox_2d, original_size=(H, W))
             else:
@@ -766,23 +894,41 @@ def my_model_infer_npz_3D(img_npz_file):
                     box_256 = resize_box_to_256(mid_slice_bbox_2d, original_size=(H, W))
 
             if args.model == 'grabcut':
-
                 img_2d_seg = grabcut_pred(box_256.astype(np.uint8), np.zeros_like(img_256, dtype=np.uint8), img_256, (new_H, new_W), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
-            elif args.model == 'mobileunet':
+            elif args.model == 'mobileunet': # not implemented yet TODO
                 img_2d_seg = my_model(torch.Tensor(img_256.transpose(2, 1, 0)).unsqueeze(0))
                 low_res_pred = postprocess_masks(img_2d_seg, [new_H, new_W], (H, W))
                 low_res_pred = torch.sigmoid(low_res_pred)  
                 low_res_pred = low_res_pred.squeeze().cpu().numpy()  
                 img_2d_seg = (low_res_pred > 0.5).astype(np.uint16)
             elif args.model == 'medsam':
-                img_2d_seg, _ = my_model_inference(my_model_lite_model, image_embedding, box_256, [new_H, new_W], [H, W])
+                
+                if z in sampled_z:
+                    img_2d_seg, _ = my_model_inference(my_model_lite_model, image_embedding, box_256, [new_H, new_W], [H, W])
 
             segs_3d_temp[z, img_2d_seg>0] = idx
+        for z_ind, z in enumerate(sampled_z):
+            if z == sampled_z[-1]:
+                break
+            for zs in range(z+1, sampled_z[z_ind + 1]):
+                step_size = 1 / (sampled_z[z_ind + 1] - z)
+                img_2d_seg = interp_shape(segs_3d_temp[z], segs_3d_temp[sampled_z[z_ind + 1]], step_size * (zs - z)).astype(np.uint8)
+                segs_3d_temp[zs, img_2d_seg>0] = idx
 
+                
+
+            
         
         # infer from middle slice to the z_max
         # print(npz_name, 'infer from middle slice to the z_min')
+        # infer from middle slice to the z_max
+        # print(npz_name, 'infer from middle slice to the z_max')
+        sampled_z = np.arange(z_min, z_middle-1, sampling_rate).astype(np.uint16)
+        if z_middle-1 not in sampled_z:
+            sampled_z = np.append(sampled_z, z_middle-1)
         for z in range(z_middle-1, z_min, -1):
+            if z not in sampled_z:
+                continue
             if args.model == 'th':
                 break
             img_2d = img_3D[z, :, :]
@@ -827,6 +973,13 @@ def my_model_infer_npz_3D(img_npz_file):
                 img_2d_seg, _ = my_model_inference(my_model_lite_model, image_embedding, box_256, [new_H, new_W], [H, W])
 
             segs_3d_temp[z, img_2d_seg>0] = idx
+        for z_ind, z in enumerate(sampled_z):
+            if z == sampled_z[-1]:
+                break
+            for zs in range(z+1, sampled_z[z_ind + 1]):
+                step_size = 1 / (sampled_z[z_ind + 1] - z)
+                img_2d_seg = interp_shape(segs_3d_temp[z], segs_3d_temp[sampled_z[z_ind + 1]], step_size * (zs - z)).astype(np.uint8)
+                segs_3d_temp[zs, img_2d_seg>0] = idx
 
         if args.model == 'th':
             segs_3d_temp = (img_3D > args.th) * idx
