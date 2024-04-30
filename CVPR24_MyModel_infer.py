@@ -895,9 +895,9 @@ def my_model_infer_npz_3D(img_npz_file):
             if z == z_middle:
                 box_256 = resize_box_to_256(mid_slice_bbox_2d, original_size=(H, W))
             else:
-                pre_seg = segs[z-1, :, :]
-                if np.max(pre_seg) > 0:
-                    pre_seg256 = resize_longest_side(pre_seg)
+                pre_seg = segs_3d_temp[z-1, :, :]
+                pre_seg256 = resize_longest_side(pre_seg)
+                if np.max(pre_seg256) > 0:
                     pre_seg256 = pad_image(pre_seg256)
                     box_256 = get_bbox256(pre_seg256)
                 else:
@@ -963,14 +963,14 @@ def my_model_infer_npz_3D(img_npz_file):
                 with torch.no_grad():
                     image_embedding = my_model_lite_model.image_encoder(img_256_tensor) # (1, 256, 64, 64)
 
-            pre_seg = segs[z+1, :, :]
-            if np.max(pre_seg) > 0:
-                pre_seg256 = resize_longest_side(pre_seg)
+            pre_seg = segs_3d_temp[z+1, :, :]
+            pre_seg256 = resize_longest_side(pre_seg)
+
+            if np.max(pre_seg256) > 0:
                 pre_seg256 = pad_image(pre_seg256)
                 box_256 = get_bbox256(pre_seg256)
             else:
-                scale_256 = 256 / max(H, W)
-                box_256 = mid_slice_bbox_2d * scale_256
+                box_256 = resize_box_to_256(mid_slice_bbox_2d, original_size=(H, W))
             if args.model == 'grabcut':
                 img_2d_seg = grabcut_pred(box_256.astype(np.uint8), np.zeros_like(img_256, dtype=np.uint8), img_256, (new_H, new_W), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
             elif args.model == 'mobileunet':
