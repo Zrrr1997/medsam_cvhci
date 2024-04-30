@@ -107,6 +107,13 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    '-sampling_rate',
+    type=int,
+    default=2,
+    help='1/sampling rate of all slices are inferred, the other are interpolated',
+)
+
+parser.add_argument(
     '--filter_background',
     default=True,
     action='store_false',
@@ -496,6 +503,7 @@ def grabcut_pred(rect, mask, image, new_size, original_size):
     return masks
 
 
+# Create an instance of the model
 
 def my_model_infer_npz_2D(img_npz_file):
     npz_name = basename(img_npz_file)
@@ -832,6 +840,7 @@ def my_model_infer_npz_3D(img_npz_file):
         gts = npz_data['gts']
         gts = (cc3d.connected_components(gts, connectivity=26) > 0)
         boxes_3D = compute_3d_bounding_boxes(gts)
+
     
     for idx, box3D in enumerate(boxes_3D, start=1):
         
@@ -844,7 +853,7 @@ def my_model_infer_npz_3D(img_npz_file):
 
         # infer from middle slice to the z_max
         # print(npz_name, 'infer from middle slice to the z_max')
-        sampling_rate = 2
+        sampling_rate = args.sampling_rate
         sampled_z = np.arange(z_middle, max(z_max, z_middle+1), sampling_rate).astype(np.uint16)
         if max(z_max, z_middle) not in sampled_z:
             sampled_z = np.append(sampled_z, max(z_max, z_middle))
