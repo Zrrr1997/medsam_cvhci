@@ -921,7 +921,7 @@ def my_model_infer_npz_3D(img_npz_file):
                 break
             for zs in range(z+1, sampled_z[z_ind + 1]):
                 step_size = 1 / (sampled_z[z_ind + 1] - z)
-                img_2d_seg = interp_shape((segs_3d_temp[z] == idx).astype(np.uint8), (segs_3d_temp[sampled_z[z_ind + 1] == idx).astype(np.uint8)], step_size * (zs - z)).astype(np.uint8)
+                img_2d_seg = interp_shape((segs_3d_temp[z] == idx).astype(np.uint8), (segs_3d_temp[sampled_z[z_ind + 1]] == idx).astype(np.uint8), step_size * (zs - z)).astype(np.uint8)
                 segs_3d_temp[zs, img_2d_seg>0] = idx
 
                 
