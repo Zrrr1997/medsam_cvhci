@@ -5,13 +5,13 @@ from scipy.ndimage import binary_dilation, binary_erosion, binary_fill_holes, bi
 import os
 import gc
 import threading
-from scipy.ndimage.morphology import distance_transform_edt
+from scipy.ndimage import distance_transform_edt
 from scipy.interpolate import interpn
 
 
 from glob import glob
 from tqdm import tqdm
-from time import time
+from time import time   
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -794,8 +794,9 @@ def interp_shape(top, bottom, precision):
 
     # create ndgrids 
     points = (np.r_[0, 2], np.arange(r), np.arange(c))
-    xi = np.rollaxis(np.mgrid[:r, :c], 0, 3).reshape((r**2, 2))
-    xi = np.c_[np.full((r**2),precision), xi]
+
+    xi = np.rollaxis(np.mgrid[:r, :c], 0, 3).reshape((r*c, 2))
+    xi = np.c_[np.full((r*c),precision), xi]
 
     # Interpolate for new plane
     out = interpn(points, top_and_bottom, xi)
