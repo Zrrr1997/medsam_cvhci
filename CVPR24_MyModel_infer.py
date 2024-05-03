@@ -607,7 +607,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             img_256_padded = pad_image(img_256_norm, 256)
 
             if ('Microscope' in img_npz_file or 'Microscopy' in img_npz_file) and ((len([el for el in rgb if el == 0]) == 1) or (np.sum(img_3c[:,:,0] - img_3c[:,:,1]) == 0)): # Grayscale or empty color channel
-
+                print('Using kmeans')
                 k = 2
                 kmeans_mask = kmean(img_3c_input, k=k).astype(np.uint8)
                 sh = kmeans_mask.shape
@@ -616,10 +616,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
                 if center_context < 0.5: # invert prediction if the central structure is considered as background
                     kmeans_mask = np.logical_not(kmeans_mask).astype(np.uint8)
-                    print('context flipping!', center_context)
 
-                #corner_context = np.mean(kmeans_mask[:5, :5]) + np.mean(kmeans_mask[-5:, :5]) + np.mean(kmeans_mask[-5:, -5:]) +  + np.mean(kmeans_mask[:5, -5:])
-                #corner_context /= 4
 
                 kmeans_mask = largest_connected_component(kmeans_mask).astype(np.uint8)
 
@@ -670,8 +667,15 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             if model_name != 'mobileunet':
                 bbox = list(box)
             cv2.imshow('img', cv2.resize(img_3c[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256, 256), interpolation=cv2.INTER_AREA))
+            crop = img_3c[bbox[1]:bbox[3], bbox[0]:bbox[2]]
+            pred_crop = temp_pred[bbox[1]:bbox[3], bbox[0]:bbox[2]]
+            fg = crop[pred_crop > 0]
+            bg = crop[pred_crop == 0]
+            
+
             if model_name == 'mobileunet':
                 cv2.imshow('test', cv2.resize(((temp_pred>0) * 255).astype(np.uint8)[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256,256), interpolation=cv2.INTER_AREA))
+
                 #cv2.imshow('gts', cv2.resize(((gts) ).astype(np.uint8)[box[1]:box[3], box[0]:box[2]], (256,256), interpolation=cv2.INTER_AREA))
 
             elif model_name == 'medsam':
@@ -704,7 +708,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
         for i, box in enumerate(boxes):
             color = np.random.rand(3)
             box_viz = box
-            show_box(box_viz, ax[1], edgecolor=color)
+            #show_box(box_viz, ax[1], edgecolor=color)
             show_mask((segs == i+1).astype(np.uint8), ax[1], mask_color=color)
 
         plt.tight_layout()
@@ -1084,7 +1088,7 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
 def get_model(img_npz_file):
     if 'PET' in img_npz_file:
         return 'th'
-    if ('CT' in img_npz_file) or ('MR' in img_npz_file) or ('XRay' in img_npz_file) or ('Fundus' in img_npz_file) or ('US' in img_npz_file):
+    if ('CT' in img_npz_file) or ('MR' in img_npz_file) or ('XRay' in img_npz_file) or ('Fundus' in img_npz_file) or ('US' in img_npz_file) or ('X-Ray' in img_npz_file):
         return 'medsam'
     else: # Dermoscopy, Endoscopy, US, Microscopy, Mammography, OCT, Fundus
         return 'mobileunet'
@@ -1098,7 +1102,7 @@ if __name__ == '__main__':
     efficiency = OrderedDict()
     efficiency['case'] = []
     efficiency['time'] = []
-    for img_npz_file in tqdm(img_npz_files):
+    for img_npz_file in tqdm(img_npz_files[:]):
         start_time = time()
         print('Using', get_model(img_npz_file))
         print(img_npz_file)
