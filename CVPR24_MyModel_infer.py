@@ -1098,7 +1098,7 @@ if __name__ == '__main__':
     efficiency = OrderedDict()
     efficiency['case'] = []
     efficiency['time'] = []
-    for img_npz_file in tqdm(img_npz_files[:]):
+    for img_npz_file in tqdm(img_npz_files):
         start_time = time()
         print('Using', get_model(img_npz_file))
         print(img_npz_file)
