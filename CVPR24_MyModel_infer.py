@@ -616,12 +616,11 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
                 if center_context < 0.5: # invert prediction if the central structure is considered as background
                     kmeans_mask = np.logical_not(kmeans_mask).astype(np.uint8)
+                    print('context flipping!', center_context)
 
                 #corner_context = np.mean(kmeans_mask[:5, :5]) + np.mean(kmeans_mask[-5:, :5]) + np.mean(kmeans_mask[-5:, -5:]) +  + np.mean(kmeans_mask[:5, -5:])
                 #corner_context /= 4
 
-                if center_context < 0.5: # invert prediction if the central structure is considered as background
-                    kmeans_mask = np.logical_not(kmeans_mask).astype(np.uint8)
                 kmeans_mask = largest_connected_component(kmeans_mask).astype(np.uint8)
 
                 temp_pred = np.zeros_like(segs).astype(np.uint16)
@@ -659,7 +658,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
                 temp_pred[bbox[1]:bbox[3], bbox[0]:bbox[2]] = my_model_mask
                 temp_pred = largest_connected_component(temp_pred).astype(np.uint8)
 
-
+                
 
 
 
@@ -668,6 +667,8 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             box256 = box256[None, ...] # (1, 4)
             my_model_mask, _ = my_model_inference(my_model_lite_model, image_embedding, box256, (newh, neww), (H, W))
         if args.debug_vis:
+            if model_name != 'mobileunet':
+                bbox = list(box)
             cv2.imshow('img', cv2.resize(img_3c[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256, 256), interpolation=cv2.INTER_AREA))
             if model_name == 'mobileunet':
                 cv2.imshow('test', cv2.resize(((temp_pred>0) * 255).astype(np.uint8)[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256,256), interpolation=cv2.INTER_AREA))
