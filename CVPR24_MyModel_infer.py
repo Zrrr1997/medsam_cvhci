@@ -102,7 +102,7 @@ parser.add_argument(
 parser.add_argument(
     '-th',
     type=int,
-    default=50,
+    default=131,
     help='percentile thresholding for the PET data',
 )
 
@@ -569,6 +569,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             img_256_tensor = torch.tensor(img_256_padded).float().permute(2, 0, 1).unsqueeze(0).to(device) # (B, 3, 256, 256)
             image_embedding = my_model_lite_model.image_encoder(img_256_tensor)
 
+
     for idx, box in enumerate(boxes, start=1):
         box256 = resize_box_to_256(box, original_size=(H, W))
 
@@ -607,7 +608,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             img_256_padded = pad_image(img_256_norm, 256)
 
             if ('Microscope' in img_npz_file or 'Microscopy' in img_npz_file) and ((len([el for el in rgb if el == 0]) == 1) or (np.sum(img_3c[:,:,0] - img_3c[:,:,1]) == 0)): # Grayscale or empty color channel
-                print('Using kmeans')
+
                 k = 2
                 kmeans_mask = kmean(img_3c_input, k=k).astype(np.uint8)
                 sh = kmeans_mask.shape
@@ -655,8 +656,6 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
                 temp_pred[bbox[1]:bbox[3], bbox[0]:bbox[2]] = my_model_mask
                 temp_pred = largest_connected_component(temp_pred).astype(np.uint8)
 
-                
-
 
 
 
@@ -667,10 +666,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             if model_name != 'mobileunet':
                 bbox = list(box)
             cv2.imshow('img', cv2.resize(img_3c[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256, 256), interpolation=cv2.INTER_AREA))
-            crop = img_3c[bbox[1]:bbox[3], bbox[0]:bbox[2]]
-            pred_crop = temp_pred[bbox[1]:bbox[3], bbox[0]:bbox[2]]
-            fg = crop[pred_crop > 0]
-            bg = crop[pred_crop == 0]
+
             
 
             if model_name == 'mobileunet':
@@ -944,7 +940,7 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
 
             segs_3d_temp[z, img_2d_seg>0] = idx
         for z_ind, z in enumerate(sampled_z):
-            if z == sampled_z[-1]:
+            if z == sampled_z[-1] or model_name == 'th':
                 break
             for zs in range(z+1, sampled_z[z_ind + 1]):
                 step_size = 1 / (sampled_z[z_ind + 1] - z)
@@ -1004,7 +1000,7 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
 
             segs_3d_temp[z, img_2d_seg>0] = idx
         for z_ind, z in enumerate(sampled_z):
-            if z == sampled_z[-1]:
+            if z == sampled_z[-1] or model_name == 'th':
                 break
             for zs in range(z+1, sampled_z[z_ind + 1]):
                 step_size = 1 / (sampled_z[z_ind + 1] - z)
@@ -1088,9 +1084,9 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
 def get_model(img_npz_file):
     if 'PET' in img_npz_file:
         return 'th'
-    if ('CT' in img_npz_file) or ('MR' in img_npz_file) or ('XRay' in img_npz_file) or ('Fundus' in img_npz_file) or ('US' in img_npz_file) or ('X-Ray' in img_npz_file):
+    if ('CT' in img_npz_file) or ('MR' in img_npz_file) or ('XRay' in img_npz_file) or ('Fundus' in img_npz_file) or ('US' in img_npz_file) or ('X-Ray' in img_npz_file) or ('Endoscopy' in img_npz_file):
         return 'medsam'
-    else: # Dermoscopy, Endoscopy, US, Microscopy, Mammography, OCT, Fundus
+    else: # Dermoscopy, US, Microscopy, Mammography, OCT, Fundus
         return 'mobileunet'
 
 if __name__ == '__main__':
