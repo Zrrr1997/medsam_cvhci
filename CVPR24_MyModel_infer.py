@@ -497,7 +497,7 @@ def grabcut_pred(rect, mask, image, new_size, original_size):
     return masks
 
 def get_mobileunet_path(img_npz_file):
-    if 'Microscope' in img_npz_file:
+    if 'Microscope' in img_npz_file or 'Microscopy' in img_npz_file:
         return 'workdir_mobileunet/best_Microscopy.pth'
     elif 'Dermoscopy' in img_npz_file:
         return 'workdir_mobileunet/best_Dermoscopy.pth'
@@ -606,7 +606,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
             img_256_padded = pad_image(img_256_norm, 256)
 
-            if 'Microscope' in img_npz_file and ((len([el for el in rgb if el == 0]) == 1) or (np.sum(img_3c[:,:,0] - img_3c[:,:,1]) == 0)): # Grayscale or empty color channel
+            if ('Microscope' in img_npz_file or 'Microscopy' in img_npz_file) and ((len([el for el in rgb if el == 0]) == 1) or (np.sum(img_3c[:,:,0] - img_3c[:,:,1]) == 0)): # Grayscale or empty color channel
 
                 k = 2
                 kmeans_mask = kmean(img_3c_input, k=k).astype(np.uint8)
