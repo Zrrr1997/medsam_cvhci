@@ -11,7 +11,7 @@ from scipy.interpolate import interpn
 
 from glob import glob
 from tqdm import tqdm
-from time import time   
+from time import time
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -160,7 +160,6 @@ if save_overlay:
     png_save_dir = args.png_save_dir
     makedirs(png_save_dir, exist_ok=True)
 
-my_model = args.my_model
 
 makedirs(pred_save_dir, exist_ok=True)
 device = torch.device(args.device)
@@ -202,7 +201,7 @@ def kmean(img, k=3):
 
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
     # number of clusters (K)
-    
+
     _, labels, (centers) = cv2.kmeans(img, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
 
     labels = labels.reshape(or_shape[0], or_shape[1], 1)
@@ -222,7 +221,7 @@ def largest_connected_component(segmentation):
             max_size = size
             largest_label = label
 
-    
+
     largest_ccp = (((connected_components == largest_label)) * 1).astype(np.uint16)
 
     largest_ccp = binary_fill_holes(largest_ccp)
@@ -300,7 +299,7 @@ def show_box(box, ax, edgecolor='blue'):
     """
     x0, y0 = box[0], box[1]
     w, h = box[2] - box[0], box[3] - box[1]
-    ax.add_patch(plt.Rectangle((x0, y0), w, h, edgecolor=edgecolor, facecolor=(0,0,0,0), lw=2))     
+    ax.add_patch(plt.Rectangle((x0, y0), w, h, edgecolor=edgecolor, facecolor=(0,0,0,0), lw=2))
 
 
 def get_bbox256(mask_256, bbox_shift=3):
@@ -314,7 +313,7 @@ def get_bbox256(mask_256, bbox_shift=3):
 
     bbox_shift : int
         Add perturbation to the bounding box coordinates
-    
+
     Returns
     -------
     numpy.ndarray
@@ -392,13 +391,13 @@ def my_model_inference(my_model_model, img_embed, box_256, new_size, original_si
 
 
     low_res_pred = my_model_model.postprocess_masks(low_res_logits, new_size, original_size)
-    low_res_pred = torch.sigmoid(low_res_pred)  
-    low_res_pred = low_res_pred.squeeze().cpu().numpy()  
+    low_res_pred = torch.sigmoid(low_res_pred)
+    low_res_pred = low_res_pred.squeeze().cpu().numpy()
     my_model_seg = (low_res_pred > 0.5).astype(np.uint8)
 
     return my_model_seg, iou
 
-if args.model == 'medsam':
+def get_medsam(my_model_checkpoint):
     my_model_lite_image_encoder = TinyViT(
         img_size=256,
         in_chans=3,
@@ -406,7 +405,7 @@ if args.model == 'medsam':
             64, ## (64, 256, 256)
             128, ## (128, 128, 128)
             160, ## (160, 64, 64)
-            320 ## (320, 64, 64) 
+            320 ## (320, 64, 64)
         ],
         depths=[2, 2, 6, 2],
         num_heads=[2, 4, 5, 10],
@@ -446,17 +445,12 @@ if args.model == 'medsam':
         prompt_encoder = my_model_lite_prompt_encoder
     )
 
-    my_model_checkpoint = torch.load(my_model, map_location='cpu')
+    my_model_checkpoint = torch.load(my_model_checkpoint, map_location='cpu')
     my_model_lite_model.load_state_dict(my_model_checkpoint)
     my_model_lite_model.to(device)
     my_model_lite_model.eval()
-elif args.model == 'mobileunet':
-    my_model = MobileUNet()
-    if args.my_model is not None:
-        my_model_checkpoint = torch.load(args.my_model, map_location='cpu')
-        my_model.load_state_dict(my_model_checkpoint['model'])
-        my_model.to(device)
-        my_model.eval()
+    return my_model_lite_model
+
 
 def infer_mobileunet(model, data, res):
     with torch.no_grad():
@@ -502,10 +496,35 @@ def grabcut_pred(rect, mask, image, new_size, original_size):
 
     return masks
 
+def get_mobileunet_path(img_npz_file):
+    if 'Microscope' in img_npz_file:
+        return 'workdir_mobileunet/best_Microscopy.pth'
+    elif 'Dermoscopy' in img_npz_file:
+        return 'workdir_mobileunet/best_Dermoscopy.pth'
+    elif 'Fundus' in img_npz_file:
+        return 'workdir_mobileunet/best_Fundus.pth'
+    elif 'Mammography' in img_npz_file:
+        return 'workdir_mobileunet/best_Mammography.pth'
+    elif 'Endoscopy' in img_npz_file:
+        return 'workdir_mobileunet/best_Endoscopy.pth'
+    elif 'OCT' in img_npz_file:
+        return 'workdir_mobileunet/best_OCT.pth'
+    elif 'US' in img_npz_file:
+        return 'workdir_mobileunet/best_US.pth'
+    elif 'XRay' in img_npz_file:
+        return 'workdir_mobileunet/best_XRay.pth'
+
+def get_mobileunet(path, device):
+    my_model = MobileUNet()
+    my_model_checkpoint = torch.load(path, map_location='cpu')
+    my_model.load_state_dict(my_model_checkpoint['model'])
+    my_model.to(torch.device('cpu'))
+    my_model.eval()
+    return my_model
 
 # Create an instance of the model
 
-def my_model_infer_npz_2D(img_npz_file):
+def my_model_infer_npz_2D(img_npz_file, model_name):
     npz_name = basename(img_npz_file)
     npz_data = np.load(img_npz_file, 'r', allow_pickle=True) # (H, W, 3)
     img_3c = npz_data['imgs'] # (H, W, 3)
@@ -529,33 +548,37 @@ def my_model_infer_npz_2D(img_npz_file):
 
     segs = np.zeros(img_3c.shape[:2], dtype=np.uint16)
 
-    if args.model != 'mobileunet':
+    if model_name != 'mobileunet':
 
         ## preprocessing
         img_256 = resize_longest_side(img_3c, 256)
         newh, neww = img_256.shape[:2]
-        
+
         img_256_norm = (img_256 - img_256.min()) / np.clip(
             img_256.max() - img_256.min(), a_min=1e-8, a_max=None
         )
-        
+
         img_256_padded_non_norm = pad_image(img_256, 256).astype(np.uint8)
         img_256_padded = pad_image(img_256_norm, 256)
 
 
-    if args.model == 'medsam':
+    if model_name == 'medsam':
+        model_path = 'work_dir/LiteMedSAM/lite_medsam.pth'
+        my_model_lite_model = get_medsam(model_path)
         with torch.no_grad():
             img_256_tensor = torch.tensor(img_256_padded).float().permute(2, 0, 1).unsqueeze(0).to(device) # (B, 3, 256, 256)
             image_embedding = my_model_lite_model.image_encoder(img_256_tensor)
 
     for idx, box in enumerate(boxes, start=1):
-        box256 = resize_box_to_256(box, original_size=(H, W)) 
-        
+        box256 = resize_box_to_256(box, original_size=(H, W))
 
-        if args.model == 'grabcut':
+
+        if model_name == 'grabcut':
             my_model_mask = grabcut_pred(box256, segs, img_256_padded_non_norm, (newh, neww), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
 
-        elif args.model == 'mobileunet':
+        elif model_name == 'mobileunet':
+            model_path = get_mobileunet_path(img_npz_file)
+            my_model = get_mobileunet(model_path, device)
             rgb = [np.sum(img_3c[:,:,i]) for i in range(3)]
             bbox = list(box)
 
@@ -568,7 +591,7 @@ def my_model_infer_npz_2D(img_npz_file):
                 bbox[3] += 1
                 bbox[1] -= 1
                 bbox[1] = max(0, bbox[1])
-            
+
 
             img_3c_input = img_3c[bbox[1]:bbox[3], bbox[0]:bbox[2]] # Crop image to bounding box
             H, W = img_3c_input.shape[:2]
@@ -576,21 +599,21 @@ def my_model_infer_npz_2D(img_npz_file):
             ## preprocessing
             img_256 = resize_longest_side(img_3c_input, 256)
             newh, neww = img_256.shape[:2]
-            
+
             img_256_norm = (img_256 - img_256.min()) / np.clip(
                 img_256.max() - img_256.min(), a_min=1e-8, a_max=None
             )
-            
+
             img_256_padded = pad_image(img_256_norm, 256)
 
-            if 'Microscopy' in img_npz_file and ((len([el for el in rgb if el == 0]) == 1) or (np.sum(img_3c[:,:,0] - img_3c[:,:,1]) == 0)):
+            if 'Microscope' in img_npz_file and ((len([el for el in rgb if el == 0]) == 1) or (np.sum(img_3c[:,:,0] - img_3c[:,:,1]) == 0)): # Grayscale or empty color channel
 
                 k = 2
-                kmeans_mask = kmean(img_3c_input, k=k).astype(np.uint8)  
+                kmeans_mask = kmean(img_3c_input, k=k).astype(np.uint8)
                 sh = kmeans_mask.shape
 
                 center_context = np.mean(kmeans_mask[int(sh[0]/2)-5:int(sh[0]/2)+5,int(sh[1]/2)-5:int(sh[1]/2)+5,:])
-           
+
                 if center_context < 0.5: # invert prediction if the central structure is considered as background
                     kmeans_mask = np.logical_not(kmeans_mask).astype(np.uint8)
 
@@ -606,7 +629,7 @@ def my_model_infer_npz_2D(img_npz_file):
                 temp_pred[bbox[1]:bbox[3], bbox[0]:bbox[2]] = kmeans_mask[:,:,0]
 
                 temp_pred = largest_connected_component(temp_pred).astype(np.uint8)
-                
+
 
             else:
 
@@ -614,7 +637,7 @@ def my_model_infer_npz_2D(img_npz_file):
                 '''
                 input_tensor = torch.Tensor(img_256_padded.transpose(2, 0, 1)).unsqueeze(0)
                 results1, results2 = [], []
-            
+
                 thread1 = threading.Thread(target=infer_mobileunet, args=(models[0], input_tensor, results1))
                 thread2 = threading.Thread(target=infer_mobileunet, args=(models[1], input_tensor, results2))
                 thread1.start()
@@ -625,39 +648,39 @@ def my_model_infer_npz_2D(img_npz_file):
                 thread2.join()
                 '''
                 low_res_pred = postprocess_masks(my_model_mask, (newh, neww), (H, W))
-                low_res_pred = torch.sigmoid(low_res_pred)  
-                low_res_pred = low_res_pred.squeeze().cpu().numpy()  
+                low_res_pred = torch.sigmoid(low_res_pred)
+                low_res_pred = low_res_pred.squeeze().cpu().numpy()
                 my_model_mask = (low_res_pred > 0.5).astype(np.uint16)
 
                 my_model_mask = largest_connected_component(my_model_mask)
-        
+
                 temp_pred = np.zeros_like(segs).astype(np.uint16)
-                
+
                 temp_pred[bbox[1]:bbox[3], bbox[0]:bbox[2]] = my_model_mask
                 temp_pred = largest_connected_component(temp_pred).astype(np.uint8)
 
 
 
 
-    
 
-        elif args.model == 'medsam':
+
+        elif model_name == 'medsam':
             box256 = box256[None, ...] # (1, 4)
             my_model_mask, _ = my_model_inference(my_model_lite_model, image_embedding, box256, (newh, neww), (H, W))
         if args.debug_vis:
             cv2.imshow('img', cv2.resize(img_3c[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256, 256), interpolation=cv2.INTER_AREA))
-            if args.model == 'mobileunet':
+            if model_name == 'mobileunet':
                 cv2.imshow('test', cv2.resize(((temp_pred>0) * 255).astype(np.uint8)[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256,256), interpolation=cv2.INTER_AREA))
                 #cv2.imshow('gts', cv2.resize(((gts) ).astype(np.uint8)[box[1]:box[3], box[0]:box[2]], (256,256), interpolation=cv2.INTER_AREA))
 
-            elif args.model == 'medsam':
+            elif model_name == 'medsam':
                 cv2.imshow('test', cv2.resize(((my_model_mask[box[1]:box[3], box[0]:box[2]]>0) * 255).astype(np.uint8), (256,256), interpolation=cv2.INTER_AREA))
 
             cv2.waitKey(0)
             #cv2.destroyAllWindows()
-        
 
-        if args.model == "mobileunet":
+
+        if model_name == "mobileunet":
             segs[temp_pred>0] = idx
         else:
             segs[my_model_mask>0] = idx
@@ -751,7 +774,7 @@ def bwperim(bw, n=4):
 def signed_bwdist(im):
     '''
     Find perim and return masked image (signed/reversed)
-    '''    
+    '''
     im = -bwdist(bwperim(im))*np.logical_not(im) + bwdist(bwperim(im))*im
     return im
 
@@ -766,12 +789,12 @@ def interp_shape(top, bottom, precision):
     '''
     Interpolate between two contours
 
-    Input: top 
+    Input: top
             [X,Y] - Image of top contour (mask)
            bottom
             [X,Y] - Image of bottom contour (mask)
            precision
-             float  - % between the images to interpolate 
+             float  - % between the images to interpolate
                 Ex: num=0.5 - Interpolate the middle image between top and bottom image
     Output: out
             [X,Y] - Interpolated image at num (%) between top and bottom
@@ -792,7 +815,7 @@ def interp_shape(top, bottom, precision):
     # rejoin top, bottom into a single array of shape (2, r, c)
     top_and_bottom = np.stack((top, bottom))
 
-    # create ndgrids 
+    # create ndgrids
     points = (np.r_[0, 2], np.arange(r), np.arange(c))
 
     xi = np.rollaxis(np.mgrid[:r, :c], 0, 3).reshape((r*c, 2))
@@ -816,7 +839,7 @@ def compute_3d_bounding_boxes(binary_mask):
     for label in np.unique(connected_components)[1:]:  # Skip background label 0
         labeled_mask = connected_components == label
         indices = np.nonzero(labeled_mask)
-  
+
         bounding_box = (
             min(indices[2]), min(indices[1]), min(indices[0]),
             max(indices[2]), max(indices[1]), max(indices[0])
@@ -829,11 +852,15 @@ def box_vol(box3D):
     return max((box3D[3] - box3D[0]), 1) * max((box3D[4] - box3D[1]), 1) * max((box3D[5] - box3D[2]), 1)
 def box_center(box3D):
     return (int(box3D[0] + (box3D[3] - box3D[0]) / 2), int(box3D[1] + (box3D[4] - box3D[1]) / 2), int(box3D[2] + (box3D[5] - box3D[2]) / 2))
-def my_model_infer_npz_3D(img_npz_file):
+def my_model_infer_npz_3D(img_npz_file, model_name):
+
+    if model_name == 'medsam':
+        model_path = 'work_dir/LiteMedSAM/lite_medsam.pth'
+        my_model_lite_model = get_medsam(model_path)
     npz_name = basename(img_npz_file)
     npz_data = np.load(img_npz_file, 'r', allow_pickle=True)
     img_3D = npz_data['imgs'] # (D, H, W)
-    segs = np.zeros_like(img_3D, dtype=np.uint16) 
+    segs = np.zeros_like(img_3D, dtype=np.uint16)
 
     if 'boxes' in npz_data.keys():
         boxes_3D = npz_data['boxes'] # [[x_min, y_min, z_min, x_max, y_max, z_max]]
@@ -842,10 +869,10 @@ def my_model_infer_npz_3D(img_npz_file):
         gts = (cc3d.connected_components(gts, connectivity=26) > 0)
         boxes_3D = compute_3d_bounding_boxes(gts)
 
-    
+
     for idx, box3D in enumerate(boxes_3D, start=1):
-        
-        segs_3d_temp = np.zeros_like(img_3D, dtype=np.uint16) 
+
+        segs_3d_temp = np.zeros_like(img_3D, dtype=np.uint16)
         x_min, y_min, z_min, x_max, y_max, z_max = box3D
 
         assert z_min <= z_max, f"z_min should be smaller than z_max, but got {z_min=} and {z_max=}"
@@ -865,7 +892,7 @@ def my_model_infer_npz_3D(img_npz_file):
             if z not in sampled_z:
                 continue
 
-            if args.model == 'th': # No slice-wise inference for thresholds
+            if model_name == 'th': # No slice-wise inference for thresholds
                 break
             img_2d = img_3D[z, :, :]
             if len(img_2d.shape) == 2:
@@ -877,16 +904,16 @@ def my_model_infer_npz_3D(img_npz_file):
             img_256 = resize_longest_side(img_3c, 256)
             new_H, new_W = img_256.shape[:2]
 
-            if not args.model == 'grabcut' and not args.model == 'th': 
+            if not model_name == 'grabcut' and not model_name == 'th':
                 img_256 = (img_256 - img_256.min()) / np.clip(
                     img_256.max() - img_256.min(), a_min=1e-8, a_max=None
                 )  # normalize to [0, 1], (H, W, 3)
             ## Pad image to 256x256
             img_256 = pad_image(img_256)
-            
 
-            if args.model == 'medsam':
-                if z in sampled_z: 
+
+            if model_name == 'medsam':
+                if z in sampled_z:
                     # convert the shape to (3, H, W)
                     img_256_tensor = torch.tensor(img_256).float().permute(2, 0, 1).unsqueeze(0).to(device)
                     # get the image embedding
@@ -903,16 +930,10 @@ def my_model_infer_npz_3D(img_npz_file):
                 else:
                     box_256 = resize_box_to_256(mid_slice_bbox_2d, original_size=(H, W))
 
-            if args.model == 'grabcut':
+            if model_name == 'grabcut':
                 img_2d_seg = grabcut_pred(box_256.astype(np.uint8), np.zeros_like(img_256, dtype=np.uint8), img_256, (new_H, new_W), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
-            elif args.model == 'mobileunet': # not implemented yet TODO
-                img_2d_seg = my_model(torch.Tensor(img_256.transpose(2, 1, 0)).unsqueeze(0))
-                low_res_pred = postprocess_masks(img_2d_seg, [new_H, new_W], (H, W))
-                low_res_pred = torch.sigmoid(low_res_pred)  
-                low_res_pred = low_res_pred.squeeze().cpu().numpy()  
-                img_2d_seg = (low_res_pred > 0.5).astype(np.uint16)
-            elif args.model == 'medsam':
-                
+            elif model_name == 'medsam':
+
                 if z in sampled_z:
                     img_2d_seg, _ = my_model_inference(my_model_lite_model, image_embedding, box_256, [new_H, new_W], [H, W])
 
@@ -925,10 +946,10 @@ def my_model_infer_npz_3D(img_npz_file):
                 img_2d_seg = interp_shape((segs_3d_temp[z] == idx).astype(np.uint8), (segs_3d_temp[sampled_z[z_ind + 1]] == idx).astype(np.uint8), step_size * (zs - z)).astype(np.uint8)
                 segs_3d_temp[zs, img_2d_seg>0] = idx
 
-                
 
-            
-        
+
+
+
         # infer from middle slice to the z_max
         # print(npz_name, 'infer from middle slice to the z_min')
         # infer from middle slice to the z_max
@@ -939,7 +960,7 @@ def my_model_infer_npz_3D(img_npz_file):
         for z in range(z_middle-1, z_min, -1):
             if z not in sampled_z:
                 continue
-            if args.model == 'th':
+            if model_name == 'th':
                 break
             img_2d = img_3D[z, :, :]
             if len(img_2d.shape) == 2:
@@ -950,14 +971,14 @@ def my_model_infer_npz_3D(img_npz_file):
 
             img_256 = resize_longest_side(img_3c, 256)
             new_H, new_W = img_256.shape[:2]
-            if args.model == 'medsam':
+            if model_name == 'medsam':
                 img_256 = (img_256 - img_256.min()) / np.clip(
                     img_256.max() - img_256.min(), a_min=1e-8, a_max=None
                 )  # normalize to [0, 1], (H, W, 3)
                 ## Pad image to 256x256
             img_256 = pad_image(img_256)
 
-            if args.model == 'medsam':
+            if model_name == 'medsam':
                 img_256_tensor = torch.tensor(img_256).float().permute(2, 0, 1).unsqueeze(0).to(device)
                 # get the image embedding
                 with torch.no_grad():
@@ -971,15 +992,9 @@ def my_model_infer_npz_3D(img_npz_file):
                 box_256 = get_bbox256(pre_seg256)
             else:
                 box_256 = resize_box_to_256(mid_slice_bbox_2d, original_size=(H, W))
-            if args.model == 'grabcut':
+            if model_name == 'grabcut':
                 img_2d_seg = grabcut_pred(box_256.astype(np.uint8), np.zeros_like(img_256, dtype=np.uint8), img_256, (new_H, new_W), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
-            elif args.model == 'mobileunet':
-                img_2d_seg = my_model(torch.Tensor(img_256.transpose(2, 1, 0)).unsqueeze(0))
-                low_res_pred = postprocess_masks(img_2d_seg, [new_H, new_W], (H, W))
-                low_res_pred = torch.sigmoid(low_res_pred)  
-                low_res_pred = low_res_pred.squeeze().cpu().numpy()  
-                img_2d_seg = (low_res_pred > 0.5).astype(np.uint8)
-            elif args.model == 'medsam':
+            elif model_name == 'medsam':
                 img_2d_seg, _ = my_model_inference(my_model_lite_model, image_embedding, box_256, [new_H, new_W], [H, W])
 
             segs_3d_temp[z, img_2d_seg>0] = idx
@@ -991,7 +1006,7 @@ def my_model_infer_npz_3D(img_npz_file):
                 img_2d_seg = interp_shape((segs_3d_temp[z] == idx).astype(np.uint8), (segs_3d_temp[sampled_z[z_ind + 1]] == idx).astype(np.uint8), step_size * (zs - z)).astype(np.uint8)
                 segs_3d_temp[zs, img_2d_seg>0] = idx
 
-        if args.model == 'th':
+        if model_name == 'th':
             segs_3d_temp = (img_3D > args.th) * idx
         curr_seg = (segs_3d_temp == idx) * 1
 
@@ -1003,7 +1018,7 @@ def my_model_infer_npz_3D(img_npz_file):
             curr_seg[outside_bbox_mask == 0] = 0 # for th
             segs_3d_temp[outside_bbox_mask == 0] = 0 # for everything else
         if args.force_volume: # try to push the tumor to bbox ratio within a certain range
-            if args.model == 'th': 
+            if model_name == 'th':
                 ratio = np.sum(curr_seg) / box_vol(box3D)
                 structuring_element = np.ones((2, 2, 2), dtype=np.uint8)
 
@@ -1032,16 +1047,16 @@ def my_model_infer_npz_3D(img_npz_file):
                         curr_seg[box_c[2], box_c[1], box_c[0]] = 1
         if np.sum(curr_seg) / box_vol(box3D) > 1:
             print(f'[WARNING] Segmentation bleeds out of the bounding box with a seg/bbox ratio of {np.sum(curr_seg) / box_vol(box3D)}')
-        
-            
-        if args.model == 'th':
+
+
+        if get_model(img_npz_file) == 'th':
             segs[curr_seg > 0] = idx
         else:
             segs[segs_3d_temp>0] = idx
     np.savez_compressed(
         join(pred_save_dir, npz_name),
         segs=segs,
-    )            
+    )
 
     # visualize image, mask and bounding box
     if save_overlay:
@@ -1065,6 +1080,13 @@ def my_model_infer_npz_3D(img_npz_file):
         plt.savefig(join(png_save_dir, npz_name.split(".")[0] + '.png'), dpi=300)
         plt.close()
 
+def get_model(img_npz_file):
+    if 'PET' in img_npz_file:
+        return 'th'
+    if ('CT' in img_npz_file) or ('MR' in img_npz_file) or ('XRay' in img_npz_file) or ('Fundus' in img_npz_file) or ('US' in img_npz_file):
+        return 'medsam'
+    else: # Dermoscopy, Endoscopy, US, Microscopy, Mammography, OCT, Fundus
+        return 'mobileunet'
 
 if __name__ == '__main__':
     img_npz_files = sorted(glob(join(data_root, '*.npz'), recursive=True))
@@ -1077,16 +1099,18 @@ if __name__ == '__main__':
     efficiency['time'] = []
     for img_npz_file in tqdm(img_npz_files):
         start_time = time()
+        print('Using', get_model(img_npz_file))
+        print(img_npz_file)
         if basename(img_npz_file).startswith('3D') or basename(img_npz_file).startswith('CT') or basename(img_npz_file).startswith('MR') or basename(img_npz_file).startswith('PET'):
-            my_model_infer_npz_3D(img_npz_file)
+            my_model_infer_npz_3D(img_npz_file, get_model(img_npz_file))
         else:
-            my_model_infer_npz_2D(img_npz_file)
+            my_model_infer_npz_2D(img_npz_file, get_model(img_npz_file))
         end_time = time()
         efficiency['case'].append(basename(img_npz_file))
         efficiency['time'].append(end_time - start_time)
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(current_time, 'file name:', basename(img_npz_file), 'time cost:', np.round(end_time - start_time, 4))
-    
+
     print('Average Time:', np.mean(efficiency['time']))
     efficiency_df = pd.DataFrame(efficiency)
     file_path = join(pred_save_dir, 'efficiency.csv')
