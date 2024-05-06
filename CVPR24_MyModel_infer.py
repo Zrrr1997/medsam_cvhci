@@ -5,6 +5,7 @@ from scipy.ndimage import binary_dilation, binary_erosion, binary_fill_holes, bi
 import os
 import gc
 import threading
+import copy
 from scipy.ndimage import distance_transform_edt
 from scipy.interpolate import interpn
 from scipy import stats
@@ -292,6 +293,11 @@ def show_mask(mask, ax, mask_color=None, alpha=0.5):
     mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1) #.astype(np.uint8) * 255
     ax.imshow(mask_image)
 
+def show_img_and_box(img,box):
+    import matplotlib.patches as patches
+    fig, ax = plt.subplots()
+    ax.imshow(img)
+    show_box(box,ax)
 
 def show_box(box, ax, edgecolor='blue'):
     """
@@ -643,7 +649,8 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             my_model_mask = grabcut_pred(box256, segs, img_256_padded_non_norm, (newh, neww), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
 
         elif model_name == 'oval':
-            my_model_mask = guess_ellipse(img_3c, box, segs)
+            tmp_prediction = np.zeros_like(segs)
+            my_model_mask = guess_ellipse(img_3c, box, tmp_prediction)
 
         elif model_name == 'mobileunet':
             model_path = get_mobileunet_path(img_npz_file)
@@ -761,13 +768,16 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
     )
     # visualize image, mask and bounding box
     if save_overlay:
-        fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+        fig, ax = plt.subplots(1, 3, figsize=(15, 5))
         ax[0].imshow(img_3c)
-        ax[1].imshow(img_3c)
+        ax[1].imshow(segs)
+        ax[2].imshow(gts)
         ax[0].set_title("Image")
         ax[1].set_title("my_model Segmentation")
+        ax[2].set_title("GT")
         ax[0].axis('off')
         ax[1].axis('off')
+        ax[2].axis('off')
 
         for i, box in enumerate(boxes):
             color = np.random.rand(3)
@@ -1157,6 +1167,8 @@ def get_model(img_npz_file):
     if 'US' in img_npz_file:
         return 'us_domain'
     if "Fundus" in img_npz_file:
+        return 'oval'
+    if "Microscopy" in img_npz_file:
         return 'oval'
     else: # Dermoscopy, US, Microscopy, Mammography, OCT, Fundus
         return 'mobileunet'
