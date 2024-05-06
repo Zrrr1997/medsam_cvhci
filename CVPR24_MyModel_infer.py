@@ -7,7 +7,7 @@ import gc
 import threading
 from scipy.ndimage import distance_transform_edt
 from scipy.interpolate import interpn
-
+from scipy import stats
 
 from glob import glob
 from tqdm import tqdm
@@ -17,6 +17,15 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn\
 
+from torchvision.models import get_model as tv_get_model
+from torchvision.transforms import (
+    Compose,
+    ToTensor,
+    Normalize,
+    RandomAffine,
+    ColorJitter,
+    Resize
+    )
 
 from segment_anything.modeling import MaskDecoder, PromptEncoder, TwoWayTransformer
 from tiny_vit_sam import TinyViT
@@ -95,7 +104,7 @@ parser.add_argument(
     '-model',
     type=str,
     default='medsam',
-    choices=['medsam', 'grabcut', 'mobileunet', 'th'],
+    choices=['medsam', 'grabcut', 'mobileunet', 'oval'],
     help='Model architecture'
 )
 
@@ -496,6 +505,22 @@ def grabcut_pred(rect, mask, image, new_size, original_size):
 
     return masks
 
+def guess_ellipse(img, rect, mask):
+    x_min, y_min, x_max, y_max = rect
+    height, width = y_max - y_min, x_max - x_min
+    #fig, ax = plt.subplots()
+    #ax.imshow(mask)
+    #import matplotlib.patches as patches
+    #p = patches.Rectangle((x_min,y_min),x_max-x_min,y_max-y_min)
+    #ax.add_patch(p)
+
+    
+    center = (width//2+x_min,height//2 + y_min)
+    axex_length = (width//2, height//2)
+    
+    mask = cv2.ellipse(mask, center, axex_length, 0, 0, 360, (1), -1)
+    return mask
+
 def get_mobileunet_path(img_npz_file):
     if 'Microscope' in img_npz_file or 'Microscopy' in img_npz_file:
         return 'workdir_mobileunet/best_Microscopy.pth'
@@ -523,6 +548,38 @@ def get_mobileunet(path, device):
     return my_model
 
 # Create an instance of the model
+
+@torch.no_grad()
+def classify_us_domain(img, model_path):
+    n = Compose([
+        ToTensor(),
+        Normalize(
+            mean=(0.213, 0.213, 0.213), 
+            std=(0.103, 0.103, 0.103)
+            )
+    ])
+    norm_img = n(img)
+    
+    model_weights_paths = sorted([os.path.join(model_path, x) for x in os.listdir(model_path) if x.endswith(".pth")])
+    model_weights = [torch.load(x,map_location="cpu") for x in model_weights_paths]
+    
+    model_types = [x.split("/")[-1].replace(f"_split_{i}.pth","") for i,x in enumerate(model_weights_paths)]
+    models = [tv_get_model(model_type) for model_type in model_types]
+    domain_prediction = []
+    #Adapt models and predict
+    for idx, model in enumerate(models):
+        assert model_types[idx] == "mobilenet_v3_small", f"Only supported Ultrasound domain classifier is mobilenet_v3_small. Got {model_types[idx]}"
+        model.classifier[3] = nn.Linear(1024, 2)
+        model.load_state_dict(model_weights[idx])
+        model.eval()
+        domain_prediction.append(
+            model(
+                norm_img.unsqueeze(0)
+                ).argmax()
+        )
+
+    domain_prediction = stats.mode(domain_prediction)
+    return "babyhead" if domain_prediction[0] == 0 else "breast"
 
 def my_model_infer_npz_2D(img_npz_file, model_name):
     npz_name = basename(img_npz_file)
@@ -561,6 +618,14 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
         img_256_padded_non_norm = pad_image(img_256, 256).astype(np.uint8)
         img_256_padded = pad_image(img_256_norm, 256)
 
+    if model_name == 'us_domain':
+            #Decide if fetal head or breat us
+            us_domain_classifier_path = "work_dir/ultrasound"
+            inferred_domain = classify_us_domain(img_3c, us_domain_classifier_path)
+            if inferred_domain == "babyhead":
+                model_name = "oval"
+            else:
+                model_name = "grabcut"
 
     if model_name == 'medsam':
         model_path = 'work_dir/LiteMedSAM/lite_medsam.pth'
@@ -572,10 +637,13 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
     for idx, box in enumerate(boxes, start=1):
         box256 = resize_box_to_256(box, original_size=(H, W))
-
+            
 
         if model_name == 'grabcut':
             my_model_mask = grabcut_pred(box256, segs, img_256_padded_non_norm, (newh, neww), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
+
+        elif model_name == 'oval':
+            my_model_mask = guess_ellipse(img_3c, box, segs)
 
         elif model_name == 'mobileunet':
             model_path = get_mobileunet_path(img_npz_file)
@@ -1084,8 +1152,12 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
 def get_model(img_npz_file):
     if 'PET' in img_npz_file:
         return 'th'
-    if ('CT' in img_npz_file) or ('MR' in img_npz_file) or ('XRay' in img_npz_file) or ('Fundus' in img_npz_file) or ('US' in img_npz_file) or ('X-Ray' in img_npz_file) or ('Endoscopy' in img_npz_file):
+    if ('CT' in img_npz_file) or ('MR' in img_npz_file) or ('XRay' in img_npz_file) or ('Fundus' in img_npz_file) or ('X-Ray' in img_npz_file) or ('Endoscopy' in img_npz_file):
         return 'medsam'
+    if 'US' in img_npz_file:
+        return 'us_domain'
+    if "Fundus" in img_npz_file:
+        return 'oval'
     else: # Dermoscopy, US, Microscopy, Mammography, OCT, Fundus
         return 'mobileunet'
 
