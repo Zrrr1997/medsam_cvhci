@@ -16,7 +16,7 @@ from time import time
 import numpy as np
 import torch
 import torch.nn.functional as F
-import torch.nn as nn\
+import torch.nn as nn
 
 from torchvision.models import get_model as tv_get_model
 from torchvision.transforms import (
@@ -553,6 +553,25 @@ def get_mobileunet(path, device):
     my_model.eval()
     return my_model
 
+def mask_edge(kmeans_mask):
+    if (np.sum(kmeans_mask[:,0,:]) / kmeans_mask.shape[0]) == 1:
+        return True
+    if (np.sum(kmeans_mask[0,:,:]) / kmeans_mask.shape[1]) == 1:
+        return True
+    if (np.sum(kmeans_mask[:,-1,:]) / kmeans_mask.shape[0]) == 1:
+        return True
+    if (np.sum(kmeans_mask[-1,:,:]) / kmeans_mask.shape[1]) == 1:
+        return True
+    return False
+
+def compute_dice(pred, gt):
+    
+    tp = np.sum((pred == 1) * (gt == 1))
+    fp = np.sum((pred == 1) * (gt == 0))
+    fn = np.sum((pred == 0) * (gt == 1))
+    dice = (2 * tp) / (2 * tp + fp + fn)
+    return dice
+
 # Create an instance of the model
 
 @torch.no_grad()
@@ -591,6 +610,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
     npz_name = basename(img_npz_file)
     npz_data = np.load(img_npz_file, 'r', allow_pickle=True) # (H, W, 3)
     img_3c = npz_data['imgs'] # (H, W, 3)
+    rgb = [np.sum(img_3c[:,:,i]) for i in range(3)]
 
 
     assert np.max(img_3c)<256, f'input data should be in range [0, 255], but got {np.unique(img_3c)}'
@@ -639,7 +659,8 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
         with torch.no_grad():
             img_256_tensor = torch.tensor(img_256_padded).float().permute(2, 0, 1).unsqueeze(0).to(device) # (B, 3, 256, 256)
             image_embedding = my_model_lite_model.image_encoder(img_256_tensor)
-
+        
+    
 
     for idx, box in enumerate(boxes, start=1):
         box256 = resize_box_to_256(box, original_size=(H, W))
@@ -684,6 +705,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
             if ('Microscope' in img_npz_file or 'Microscopy' in img_npz_file) and ((len([el for el in rgb if el == 0]) == 1) or (np.sum(img_3c[:,:,0] - img_3c[:,:,1]) == 0)): # Grayscale or empty color channel
 
+
                 k = 2
                 kmeans_mask = kmean(img_3c_input, k=k).astype(np.uint8)
                 sh = kmeans_mask.shape
@@ -692,6 +714,11 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
                 if center_context < 0.5: # invert prediction if the central structure is considered as background
                     kmeans_mask = np.logical_not(kmeans_mask).astype(np.uint8)
+
+                if mask_edge(kmeans_mask):
+                    kmeans_mask = np.logical_not(kmeans_mask).astype(np.uint8)
+
+
 
 
                 kmeans_mask = largest_connected_component(kmeans_mask).astype(np.uint8)
@@ -704,7 +731,6 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
 
             else:
-
                 my_model_mask = my_model(torch.Tensor(img_256_padded.transpose(2, 0, 1)).unsqueeze(0))
                 '''
                 input_tensor = torch.Tensor(img_256_padded.transpose(2, 0, 1)).unsqueeze(0)
@@ -747,7 +773,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             if model_name == 'mobileunet':
                 cv2.imshow('test', cv2.resize(((temp_pred>0) * 255).astype(np.uint8)[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256,256), interpolation=cv2.INTER_AREA))
 
-                #cv2.imshow('gts', cv2.resize(((gts) ).astype(np.uint8)[box[1]:box[3], box[0]:box[2]], (256,256), interpolation=cv2.INTER_AREA))
+                #cv2.imshow('gts', cv2.resize(((gts) * 255).astype(np.uint8)[box[1]:box[3], box[0]:box[2]], (256,256), interpolation=cv2.INTER_AREA))
 
             elif model_name == 'medsam':
                 cv2.imshow('test', cv2.resize(((my_model_mask[box[1]:box[3], box[0]:box[2]]>0) * 255).astype(np.uint8), (256,256), interpolation=cv2.INTER_AREA))
@@ -757,7 +783,14 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
 
         if model_name == "mobileunet":
-            segs[temp_pred>0] = idx
+            #segs[temp_pred>0] = idx
+            to_update = (segs == 0) * (temp_pred > 0)
+            segs[to_update] = idx
+            #dice_score = compute_dice((segs > 0).astype(np.uint8), (gts > 0).astype(np.uint8))
+            #if idx == len(boxes) - 1:
+            #    print('Dice', dice_score)
+
+
         else:
             segs[my_model_mask>0] = idx
         gc.collect()
@@ -789,6 +822,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
         plt.savefig(join(png_save_dir, npz_name.split(".")[0] + '.png'), dpi=300)
         plt.close()
     gc.collect()
+    #return dice_score
 
 def ndgrid(*args,**kwargs):
     """
@@ -1182,19 +1216,23 @@ if __name__ == '__main__':
     efficiency = OrderedDict()
     efficiency['case'] = []
     efficiency['time'] = []
+    dices = []
     for img_npz_file in tqdm(img_npz_files):
         start_time = time()
         print('Using', get_model(img_npz_file))
         print(img_npz_file)
+
         if basename(img_npz_file).startswith('3D') or basename(img_npz_file).startswith('CT') or basename(img_npz_file).startswith('MR') or basename(img_npz_file).startswith('PET'):
             my_model_infer_npz_3D(img_npz_file, get_model(img_npz_file))
         else:
             my_model_infer_npz_2D(img_npz_file, get_model(img_npz_file))
+
         end_time = time()
         efficiency['case'].append(basename(img_npz_file))
         efficiency['time'].append(end_time - start_time)
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(current_time, 'file name:', basename(img_npz_file), 'time cost:', np.round(end_time - start_time, 4))
+
 
     print('Average Time:', np.mean(efficiency['time']))
     efficiency_df = pd.DataFrame(efficiency)
