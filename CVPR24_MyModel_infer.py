@@ -554,13 +554,20 @@ def get_mobileunet(path, device):
     return my_model
 
 def mask_edge(kmeans_mask):
-    if (np.sum(kmeans_mask[:,0,:]) / kmeans_mask.shape[0]) == 1:
+    if (np.sum(kmeans_mask[:,0,:]) / kmeans_mask.shape[0]) > 0.9:
+        print('Flipping since: ', np.sum(kmeans_mask[:,0,:]) / kmeans_mask.shape[0])
         return True
-    if (np.sum(kmeans_mask[0,:,:]) / kmeans_mask.shape[1]) == 1:
+    if (np.sum(kmeans_mask[0,:,:]) / kmeans_mask.shape[1]) > 0.9:
+        print('Flipping since: ', np.sum(kmeans_mask[0,:,:]) / kmeans_mask.shape[1])
+
         return True
-    if (np.sum(kmeans_mask[:,-1,:]) / kmeans_mask.shape[0]) == 1:
+    if (np.sum(kmeans_mask[:,-1,:]) / kmeans_mask.shape[0]) > 0.9:
+        print('Flipping since: ', np.sum(kmeans_mask[:,-1,:]) / kmeans_mask.shape[0]) 
+
         return True
-    if (np.sum(kmeans_mask[-1,:,:]) / kmeans_mask.shape[1]) == 1:
+    if (np.sum(kmeans_mask[-1,:,:]) / kmeans_mask.shape[1]) > 0.9:
+        print('Flipping since: ', np.sum(kmeans_mask[-1,:,:]) / kmeans_mask.shape[1])
+
         return True
     return False
 
@@ -605,6 +612,36 @@ def classify_us_domain(img, model_path):
 
     domain_prediction = stats.mode(domain_prediction)
     return "babyhead" if domain_prediction[0] == 0 else "breast"
+
+
+def detect_circular_object(image):
+    # Convert the image to grayscale
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    # Apply Canny edge detection
+    edges = cv2.Canny(gray, 50, 150)
+    cir_zeros = np.zeros_like(edges)
+    
+
+    # Apply Hough Circle Transform
+    circles = cv2.HoughCircles(edges, cv2.HOUGH_GRADIENT, dp=1, minDist=20,
+                               param1=50, param2=30, minRadius=5, maxRadius=100)
+    
+
+    if circles is not None:
+        circles = np.uint16(np.around(circles))
+        for i in circles[0, :1]:
+            center = (i[0], i[1])
+            # circle center
+            # circle outline
+            radius = i[2]
+            cv2.circle(cir_zeros, center, radius, (1, 1, 1), -1)
+
+
+        return cir_zeros
+    else:
+
+        return None
 
 def my_model_infer_npz_2D(img_npz_file, model_name):
     npz_name = basename(img_npz_file)
@@ -661,6 +698,24 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             image_embedding = my_model_lite_model.image_encoder(img_256_tensor)
         
     
+    rgb = [np.sum(img_3c[:,:,i]) for i in range(3)]
+
+    allow_circles = False
+    all_circles = 0
+    if ('Microscope' in img_npz_file or 'Microscopy' in img_npz_file) and (np.sum(img_3c[:,:,0] - img_3c[:,:,1]) == 0): # Grayscale 
+        for idx, box in enumerate(boxes, start=1):
+            bbox = list(box)
+            img_3c_input = img_3c[bbox[1]:bbox[3], bbox[0]:bbox[2]] # Crop image to bounding box
+            if detect_circular_object(img_3c_input) is not None:
+                all_circles += 1
+    print(all_circles, len(boxes))
+    if all_circles / len(boxes) > 0.35:
+        allow_circles = True
+
+
+    if model_name == 'mobileunet':
+        model_path = get_mobileunet_path(img_npz_file)
+        my_model = get_mobileunet(model_path, device)
 
     for idx, box in enumerate(boxes, start=1):
         box256 = resize_box_to_256(box, original_size=(H, W))
@@ -674,9 +729,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             my_model_mask = guess_ellipse(img_3c, box, tmp_prediction)
 
         elif model_name == 'mobileunet':
-            model_path = get_mobileunet_path(img_npz_file)
-            my_model = get_mobileunet(model_path, device)
-            rgb = [np.sum(img_3c[:,:,i]) for i in range(3)]
+
             bbox = list(box)
 
             # Avoid empty bounding boxes
@@ -704,22 +757,22 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             img_256_padded = pad_image(img_256_norm, 256)
 
             if ('Microscope' in img_npz_file or 'Microscopy' in img_npz_file) and ((len([el for el in rgb if el == 0]) == 1) or (np.sum(img_3c[:,:,0] - img_3c[:,:,1]) == 0)): # Grayscale or empty color channel
+    
+                circles = detect_circular_object(img_3c_input)
+                if circles is not None and allow_circles:
+                    kmeans_mask = np.expand_dims(circles, axis=-1)
+                else:
+                    k = 2
+                    kmeans_mask = kmean(img_3c_input, k=k).astype(np.uint8)
+                    sh = kmeans_mask.shape
 
+                    center_context = np.mean(kmeans_mask[int(sh[0]/2)-5:int(sh[0]/2)+5,int(sh[1]/2)-5:int(sh[1]/2)+5,:])
 
-                k = 2
-                kmeans_mask = kmean(img_3c_input, k=k).astype(np.uint8)
-                sh = kmeans_mask.shape
+                    if center_context < 0.5: # invert prediction if the central structure is considered as background
+                        kmeans_mask = np.logical_not(kmeans_mask).astype(np.uint8)
 
-                center_context = np.mean(kmeans_mask[int(sh[0]/2)-5:int(sh[0]/2)+5,int(sh[1]/2)-5:int(sh[1]/2)+5,:])
-
-                if center_context < 0.5: # invert prediction if the central structure is considered as background
-                    kmeans_mask = np.logical_not(kmeans_mask).astype(np.uint8)
-
-                if mask_edge(kmeans_mask):
-                    kmeans_mask = np.logical_not(kmeans_mask).astype(np.uint8)
-
-
-
+                    if mask_edge(kmeans_mask) and not allow_circles:
+                        kmeans_mask = np.logical_not(kmeans_mask).astype(np.uint8)
 
                 kmeans_mask = largest_connected_component(kmeans_mask).astype(np.uint8)
 
@@ -727,7 +780,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
                 temp_pred[bbox[1]:bbox[3], bbox[0]:bbox[2]] = kmeans_mask[:,:,0]
 
-                temp_pred = largest_connected_component(temp_pred).astype(np.uint8)
+                #temp_pred = largest_connected_component(temp_pred).astype(np.uint8)
 
 
             else:
@@ -755,7 +808,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
                 temp_pred = np.zeros_like(segs).astype(np.uint16)
 
                 temp_pred[bbox[1]:bbox[3], bbox[0]:bbox[2]] = my_model_mask
-                temp_pred = largest_connected_component(temp_pred).astype(np.uint8)
+                #temp_pred = largest_connected_component(temp_pred).astype(np.uint8)
 
 
 
@@ -783,9 +836,9 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
 
         if model_name == "mobileunet":
-            #segs[temp_pred>0] = idx
-            to_update = (segs == 0) * (temp_pred > 0)
-            segs[to_update] = idx
+            segs[temp_pred>0] = idx
+            #to_update = (segs == 0) * (temp_pred > 0)
+            #segs[to_update] = idx
             #dice_score = compute_dice((segs > 0).astype(np.uint8), (gts > 0).astype(np.uint8))
             #if idx == len(boxes) - 1:
             #    print('Dice', dice_score)
@@ -1201,8 +1254,6 @@ def get_model(img_npz_file):
     if 'US' in img_npz_file:
         return 'us_domain'
     if "Fundus" in img_npz_file:
-        return 'oval'
-    if "Microscopy" in img_npz_file:
         return 'oval'
     else: # Dermoscopy, US, Microscopy, Mammography, OCT, Fundus
         return 'mobileunet'
