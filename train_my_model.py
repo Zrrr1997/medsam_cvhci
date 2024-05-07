@@ -58,7 +58,7 @@ parser.add_argument(
     help="Number of workers for dataloader."
 )
 parser.add_argument(
-    "-device", type=str, default="cuda:0",
+    "-device", type=str, default="cpu",
     help="Device to train on."
 )
 parser.add_argument(
@@ -397,7 +397,7 @@ if model_checkpoint is not None:
             model_checkpoint,
             map_location="cpu"
         )
-        model.load_state_dict(medsam_lite_ckpt, strict=True)
+        model.load_state_dict(medsam_lite_ckpt['model'], strict=True)
     else:
         print(f"Pretained weights {model_checkpoint} not found, training from scratch")
 
