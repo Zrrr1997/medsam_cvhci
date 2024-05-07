@@ -105,7 +105,7 @@ parser.add_argument(
     '-model',
     type=str,
     default='medsam',
-    choices=['medsam', 'grabcut', 'mobileunet', 'oval'],
+    choices=['medsam', 'grabcut', 'mobileunet', 'oval', 'th'],
     help='Model architecture'
 )
 
