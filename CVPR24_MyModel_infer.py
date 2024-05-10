@@ -709,7 +709,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
     rgb = [np.sum(img_3c[:,:,i]) for i in range(3)]
 
 
-    if model_name == 'medsam' and not (((two_channels or grayscale or almost_grayscale) and microscopy_img):
+    if model_name == 'medsam' and not ((two_channels or grayscale or almost_grayscale) and microscopy_img):
         model_path = 'work_dir/LiteMedSAM/lite_medsam.pth'
         my_model_lite_model = get_medsam(model_path)
         with torch.no_grad():
