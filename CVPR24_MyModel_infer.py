@@ -198,11 +198,14 @@ def kmean(img, k=3):
 
 
 def largest_connected_component(segmentation):
-    connected_components = cc3d.connected_components(segmentation, connectivity=26)
 
+
+    connected_components = cc3d.connected_components(segmentation, connectivity=26)
     max_size = 0
     largest_label = None
+
     for label in np.unique(connected_components)[1:]:  # Skip background label 0
+        
         size = np.sum(label == connected_components)
         if size >= max_size:
             max_size = size
@@ -210,10 +213,12 @@ def largest_connected_component(segmentation):
 
     largest_ccp = (((connected_components == largest_label)) * 1).astype(np.uint8)
 
-    largest_ccp = cv2.resize(largest_ccp, None, fx=2, fy=2, interpolation=cv2.INTER_AREA)
 
+    largest_ccp = cv2.resize(largest_ccp, None, fx=2, fy=2, interpolation=cv2.INTER_AREA)
+  
     largest_ccp = binary_fill_holes(largest_ccp).astype(np.uint8)
 
+    
     largest_ccp = cv2.resize(largest_ccp, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
 
     if len(segmentation.shape) == 3:
@@ -654,7 +659,6 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
     img_3c = npz_data['imgs'] # (H, W, 3)
     rgb = [np.sum(img_3c[:,:,i]) for i in range(3)]
 
-
     assert np.max(img_3c)<256, f'input data should be in range [0, 255], but got {np.unique(img_3c)}'
     H, W = img_3c.shape[:2]
     if 'boxes' in npz_data.keys():
@@ -705,13 +709,15 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
     rgb = [np.sum(img_3c[:,:,i]) for i in range(3)]
 
 
-    if model_name == 'medsam' and not ((two_channels or grayscale or almost_grayscale) and microscopy_img):
+    if model_name == 'medsam' and not (((two_channels or grayscale or almost_grayscale) and microscopy_img) or 'OCT' in img_npz_file):
         model_path = 'work_dir/LiteMedSAM/lite_medsam.pth'
         my_model_lite_model = get_medsam(model_path)
         with torch.no_grad():
             img_256_tensor = torch.tensor(img_256_padded).float().permute(2, 0, 1).unsqueeze(0).to(device) # (B, 3, 256, 256)
             image_embedding = my_model_lite_model.image_encoder(img_256_tensor)
         
+
+
 
 
     allow_circles = False
@@ -733,7 +739,30 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
     for idx, box in enumerate(boxes, start=1):
         box256 = resize_box_to_256(box, original_size=(H, W))
+        bbox = list(box)
+        oct_th = False
+        if oct_th: 
+
+            img_gs = img_3c[:,:,0]
+            x_min, y_min, x_max, y_max = box
+            vals = list(img_gs[y_min:y_max, x_min:x_max].flatten())
+            vals = np.array(vals)
+
+            n, x = np.histogram((vals).flatten(), bins=10)
+
+            step_size = (x[1] - x[0]) / 2
+            x = np.array([el - step_size for el in x[1:]])
+
+            new_th = GHT(n, x=x, nu=1e60, tau=1e-30)[0] + 30
             
+            my_model_mask = np.zeros((img_3c.shape[0], img_3c.shape[1])).astype(np.uint8)
+            my_model_mask[y_min:y_max, x_min:x_max] = (img_gs[y_min:y_max, x_min:x_max] < new_th).astype(np.uint8)
+
+            my_model_mask = largest_connected_component(my_model_mask).astype(np.uint8)
+
+
+
+
 
         if model_name == 'grabcut':
             my_model_mask = grabcut_pred(box256, segs, img_256_padded_non_norm, (newh, neww), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
@@ -820,7 +849,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
                 temp_pred[bbox[1]:bbox[3], bbox[0]:bbox[2]] = my_model_mask
 
-        elif model_name == 'medsam':
+        elif model_name == 'medsam' and not oct_th:
             box256 = box256[None, ...] # (1, 4)
             my_model_mask, _ = my_model_inference(my_model_lite_model, image_embedding, box256, (newh, neww), (H, W))
 
@@ -828,6 +857,8 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             if model_name != 'mobileunet':
                 bbox = list(box)
             cv2.imshow('img', cv2.resize(img_3c[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256, 256), interpolation=cv2.INTER_AREA))
+            #cv2.imshow('img_full', cv2.resize(img_3c, (256, 256), interpolation=cv2.INTER_AREA))
+            #cv2.imshow('img_full', img_3c)
 
             if model_name == 'mobileunet' or ((two_channels or grayscale or almost_grayscale) and microscopy_img):
                 cv2.imshow('test', cv2.resize(((temp_pred>0) * 255).astype(np.uint8)[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256,256), interpolation=cv2.INTER_AREA))
@@ -847,7 +878,9 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             segs[temp_pred>0] = idx
         else:
             segs[my_model_mask>0] = idx
-        
+    if 'gts' in npz_data.keys():
+        dice = compute_dice((segs > 0), (npz_data['gts'] > 0))
+        print('Dice', compute_dice((segs > 0), (npz_data['gts'] > 0)))    
     np.savez_compressed(
         join(pred_save_dir, npz_name),
         segs=segs,
@@ -874,6 +907,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
         plt.tight_layout()
         plt.savefig(join(png_save_dir, npz_name.split(".")[0] + '.png'), dpi=300)
         plt.close()
+    return dice
 
 def ndgrid(*args,**kwargs):
     """
@@ -1302,7 +1336,7 @@ if __name__ == '__main__':
         if basename(img_npz_file).startswith('3D') or basename(img_npz_file).startswith('CT') or basename(img_npz_file).startswith('MR') or basename(img_npz_file).startswith('PET'):
             my_model_infer_npz_3D(img_npz_file, get_model(img_npz_file))
         else:
-            my_model_infer_npz_2D(img_npz_file, get_model(img_npz_file))
+            dices.append(my_model_infer_npz_2D(img_npz_file, get_model(img_npz_file)))
 
         end_time = time()
         efficiency['case'].append(basename(img_npz_file))
