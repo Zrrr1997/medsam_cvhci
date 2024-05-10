@@ -1,45 +1,36 @@
+import os
 from os import makedirs
 from os.path import join, basename
-from scipy.ndimage import binary_dilation, binary_erosion, binary_fill_holes, binary_closing
 
-import os
-import gc
-import threading
-import copy
-from scipy.ndimage import distance_transform_edt
+import numpy as np
+import pandas as pd
+import torch
+import cv2
+from scipy.ndimage import binary_dilation, binary_erosion, binary_fill_holes, distance_transform_edt
 from scipy.interpolate import interpn
 from scipy import stats
-
-from glob import glob
-from tqdm import tqdm
-from time import time
-import numpy as np
-import torch
-import torch.nn.functional as F
-import torch.nn as nn
+import cc3d
 
 from torchvision.models import get_model as tv_get_model
-from torchvision.transforms import (
-    Compose,
-    ToTensor,
-    Normalize,
-    RandomAffine,
-    ColorJitter,
-    Resize
-    )
+from torchvision.transforms import Compose, ToTensor, Normalize
 
 from segment_anything.modeling import MaskDecoder, PromptEncoder, TwoWayTransformer
 from tiny_vit_sam import TinyViT
-from matplotlib import pyplot as plt
-import cv2
-import argparse
-from collections import OrderedDict
-import pandas as pd
-from datetime import datetime
-import cc3d
-
 from utils.mobileunet import MobileUNet
 from utils.medsam_model import my_model_Lite
+
+import argparse
+from collections import OrderedDict
+from datetime import datetime
+from glob import glob
+from tqdm import tqdm
+from time import time
+from matplotlib import pyplot as plt
+
+import torch.nn.functional as F
+import torch.nn as nn
+
+
 
 #%% set seeds
 torch.set_float32_matmul_precision('high')
@@ -63,12 +54,6 @@ parser.add_argument(
     type=str,
     default='test_demo/segs/',
     help='directory to save the prediction',
-)
-parser.add_argument(
-    '-my_model',
-    type=str,
-    default=None,
-    help='path to the checkpoint of my_model-Lite',
 )
 parser.add_argument(
     '-device',
@@ -154,13 +139,6 @@ parser.add_argument(
 
 args = parser.parse_args()
 
-import resource
-
-if not args.save_overlay:
-    # Set the soft limit for memory usage to 8GB (8 * 1024 * 1024 * 1024 bytes)
-    soft, hard = 8 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024
-    #resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
-
 data_root = args.input_dir
 pred_save_dir = args.output_dir
 save_overlay = args.save_overlay
@@ -176,6 +154,7 @@ device = torch.device(args.device)
 image_size = 256
 
 def resize_longest_side(image, target_length=256):
+
     """
     Resize image to target_length while keeping the aspect ratio
     Expects a numpy array with shape HxWxC in uint8 format.
@@ -204,7 +183,6 @@ def pad_image(image, target_size=256):
     return image_padded
 
 def kmean(img, k=3):
-
     or_shape = img.shape
     img = img.reshape((-1, 3))
     img = np.float32(img)
@@ -212,10 +190,9 @@ def kmean(img, k=3):
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
     # number of clusters (K)
 
-    _, labels, (centers) = cv2.kmeans(img, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+    _, labels, _ = cv2.kmeans(img, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
 
     labels = labels.reshape(or_shape[0], or_shape[1], 1)
-
 
     return labels
 
@@ -231,12 +208,52 @@ def largest_connected_component(segmentation):
             max_size = size
             largest_label = label
 
+    largest_ccp = (((connected_components == largest_label)) * 1).astype(np.uint8)
 
-    largest_ccp = (((connected_components == largest_label)) * 1).astype(np.uint16)
+    largest_ccp = cv2.resize(largest_ccp, None, fx=2, fy=2, interpolation=cv2.INTER_AREA)
 
-    largest_ccp = binary_fill_holes(largest_ccp)
+    largest_ccp = binary_fill_holes(largest_ccp).astype(np.uint8)
+
+    largest_ccp = cv2.resize(largest_ccp, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
+
+    if len(segmentation.shape) == 3:
+        largest_ccp = np.expand_dims(largest_ccp, axis=-1)
 
     return largest_ccp
+
+
+csum = lambda z: np.cumsum(z)[:-1]
+dsum = lambda z: np.cumsum(z[::-1])[-2::-1]
+argmax = lambda x, f: np.mean(x[:-1][f == np.max(f)])  # Use the mean for ties.
+clip = lambda z: np.maximum(1e-30, z)
+
+def preliminaries(n, x):
+  """Some math that is shared across multiple algorithms."""
+  assert np.all(n >= 0)
+  x = np.arange(len(n), dtype=n.dtype) if x is None else x
+  assert np.all(x[1:] >= x[:-1])
+  w0 = clip(csum(n))
+  w1 = clip(dsum(n))
+  p0 = w0 / (w0 + w1)
+  p1 = w1 / (w0 + w1)
+  mu0 = csum(n * x) / w0
+  mu1 = dsum(n * x) / w1
+  d0 = csum(n * x**2) - w0 * mu0**2
+  d1 = dsum(n * x**2) - w1 * mu1**2
+  return x, w0, w1, p0, p1, mu0, mu1, d0, d1
+
+def GHT(n, x=None, nu=0, tau=0, kappa=0, omega=0.5):
+  assert nu >= 0
+  assert tau >= 0
+  assert kappa >= 0
+  assert omega >= 0 and omega <= 1
+  x, w0, w1, p0, p1, _, _, d0, d1 = preliminaries(n, x)
+  v0 = clip((p0 * nu * tau**2 + d0) / (p0 * nu + w0))
+  v1 = clip((p1 * nu * tau**2 + d1) / (p1 * nu + w1))
+  f0 = -d0 / v0 - w0 * np.log(v0) + 2 * (w0 + kappa *      omega)  * np.log(w0)
+  f1 = -d1 / v1 - w1 * np.log(v1) + 2 * (w1 + kappa * (1 - omega)) * np.log(w1)
+  return argmax(x, f0 + f1), f0 + f1
+
 
 @torch.no_grad()
 def postprocess_masks(masks, new_size, original_size):
@@ -294,8 +311,7 @@ def show_mask(mask, ax, mask_color=None, alpha=0.5):
     ax.imshow(mask_image)
 
 def show_img_and_box(img,box):
-    import matplotlib.patches as patches
-    fig, ax = plt.subplots()
+    _, ax = plt.subplots()
     ax.imshow(img)
     show_box(box,ax)
 
@@ -389,6 +405,7 @@ def my_model_inference(my_model_model, img_embed, box_256, new_size, original_si
     Returns:
         tuple: A tuple containing the segmented image and the intersection over union (IoU) score.
     """
+    start = time()
     box_torch = torch.as_tensor(box_256[None, None, ...], dtype=torch.float, device=img_embed.device)
     sparse_embeddings, dense_embeddings = my_model_model.prompt_encoder(
         points = None,
@@ -405,10 +422,10 @@ def my_model_inference(my_model_model, img_embed, box_256, new_size, original_si
 
 
 
-    low_res_pred = my_model_model.postprocess_masks(low_res_logits, new_size, original_size)
+    low_res_pred = postprocess_masks(low_res_logits, new_size, original_size)
     low_res_pred = torch.sigmoid(low_res_pred)
     low_res_pred = low_res_pred.squeeze().cpu().numpy()
-    my_model_seg = (low_res_pred > 0.5).astype(np.uint8)
+    my_model_seg = (low_res_pred > 0.5).astype(np.uint16)
 
     return my_model_seg, iou
 
@@ -465,14 +482,6 @@ def get_medsam(my_model_checkpoint):
     my_model_lite_model.to(device)
     my_model_lite_model.eval()
     return my_model_lite_model
-
-
-def infer_mobileunet(model, data, res):
-    with torch.no_grad():
-        res.append(model(data))
-
-#my_second_model = my_model
-#models = [my_model.eval(), my_second_model.eval()]
 
 
 def grabcut_pred(rect, mask, image, new_size, original_size):
@@ -545,7 +554,7 @@ def get_mobileunet_path(img_npz_file):
     elif 'XRay' in img_npz_file:
         return 'workdir_mobileunet/best_XRay.pth'
 
-def get_mobileunet(path, device):
+def get_mobileunet(path):
     my_model = MobileUNet()
     my_model_checkpoint = torch.load(path, map_location='cpu')
     my_model.load_state_dict(my_model_checkpoint['model'])
@@ -555,19 +564,12 @@ def get_mobileunet(path, device):
 
 def mask_edge(kmeans_mask):
     if (np.sum(kmeans_mask[:,0,:]) / kmeans_mask.shape[0]) > 0.9:
-        print('Flipping since: ', np.sum(kmeans_mask[:,0,:]) / kmeans_mask.shape[0])
         return True
     if (np.sum(kmeans_mask[0,:,:]) / kmeans_mask.shape[1]) > 0.9:
-        print('Flipping since: ', np.sum(kmeans_mask[0,:,:]) / kmeans_mask.shape[1])
-
         return True
     if (np.sum(kmeans_mask[:,-1,:]) / kmeans_mask.shape[0]) > 0.9:
-        print('Flipping since: ', np.sum(kmeans_mask[:,-1,:]) / kmeans_mask.shape[0]) 
-
         return True
     if (np.sum(kmeans_mask[-1,:,:]) / kmeans_mask.shape[1]) > 0.9:
-        print('Flipping since: ', np.sum(kmeans_mask[-1,:,:]) / kmeans_mask.shape[1])
-
         return True
     return False
 
@@ -576,7 +578,9 @@ def compute_dice(pred, gt):
     tp = np.sum((pred == 1) * (gt == 1))
     fp = np.sum((pred == 1) * (gt == 0))
     fn = np.sum((pred == 0) * (gt == 1))
+
     dice = (2 * tp) / (2 * tp + fp + fn)
+
     return dice
 
 # Create an instance of the model
@@ -615,6 +619,7 @@ def classify_us_domain(img, model_path):
 
 
 def detect_circular_object(image):
+    start = time
     # Convert the image to grayscale
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
@@ -668,8 +673,9 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
     segs = np.zeros(img_3c.shape[:2], dtype=np.uint16)
 
-    if model_name != 'mobileunet':
 
+
+    if model_name != 'mobileunet':
         ## preprocessing
         img_256 = resize_longest_side(img_3c, 256)
         newh, neww = img_256.shape[:2]
@@ -690,19 +696,27 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             else:
                 model_name = "grabcut"
 
-    if model_name == 'medsam':
+    microscopy_img = ('Microscope' in img_npz_file or 'Microscopy' in img_npz_file)
+
+    two_channels = (len([el for el in rgb if el == 0]) == 1) 
+    grayscale = (np.sum(img_3c[:,:,0] - img_3c[:,:,1]) == 0)
+    almost_grayscale = (np.mean(np.abs(img_3c[:,:,0].astype(np.int16) - img_3c[:,:,1].astype(np.int16))) > 0) and (np.mean(np.abs(img_3c[:,:,0].astype(np.int16) - img_3c[:,:,1].astype(np.int16))) <= 5)
+
+    rgb = [np.sum(img_3c[:,:,i]) for i in range(3)]
+
+
+    if model_name == 'medsam' and not ((two_channels or grayscale or almost_grayscale) and microscopy_img):
         model_path = 'work_dir/LiteMedSAM/lite_medsam.pth'
         my_model_lite_model = get_medsam(model_path)
         with torch.no_grad():
             img_256_tensor = torch.tensor(img_256_padded).float().permute(2, 0, 1).unsqueeze(0).to(device) # (B, 3, 256, 256)
             image_embedding = my_model_lite_model.image_encoder(img_256_tensor)
         
-    
-    rgb = [np.sum(img_3c[:,:,i]) for i in range(3)]
+
 
     allow_circles = False
     all_circles = 0
-    if ('Microscope' in img_npz_file or 'Microscopy' in img_npz_file) and (np.sum(img_3c[:,:,0] - img_3c[:,:,1]) == 0): # Grayscale 
+    if microscopy_img and grayscale:  
         for idx, box in enumerate(boxes, start=1):
             bbox = list(box)
             img_3c_input = img_3c[bbox[1]:bbox[3], bbox[0]:bbox[2]] # Crop image to bounding box
@@ -712,10 +726,10 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
     if all_circles / len(boxes) > 0.35:
         allow_circles = True
 
-
+    
     if model_name == 'mobileunet':
         model_path = get_mobileunet_path(img_npz_file)
-        my_model = get_mobileunet(model_path, device)
+        my_model = get_mobileunet(model_path)
 
     for idx, box in enumerate(boxes, start=1):
         box256 = resize_box_to_256(box, original_size=(H, W))
@@ -728,7 +742,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             tmp_prediction = np.zeros_like(segs)
             my_model_mask = guess_ellipse(img_3c, box, tmp_prediction)
 
-        elif model_name == 'mobileunet':
+        elif (model_name == 'mobileunet') or ((grayscale or two_channels or almost_grayscale) and microscopy_img):
 
             bbox = list(box)
 
@@ -742,12 +756,12 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
                 bbox[1] -= 1
                 bbox[1] = max(0, bbox[1])
 
-
             img_3c_input = img_3c[bbox[1]:bbox[3], bbox[0]:bbox[2]] # Crop image to bounding box
             H, W = img_3c_input.shape[:2]
 
             ## preprocessing
             img_256 = resize_longest_side(img_3c_input, 256)
+
             newh, neww = img_256.shape[:2]
 
             img_256_norm = (img_256 - img_256.min()) / np.clip(
@@ -756,12 +770,25 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
             img_256_padded = pad_image(img_256_norm, 256)
 
-            if ('Microscope' in img_npz_file or 'Microscopy' in img_npz_file) and ((len([el for el in rgb if el == 0]) == 1) or (np.sum(img_3c[:,:,0] - img_3c[:,:,1]) == 0)): # Grayscale or empty color channel
-    
+            if microscopy_img and (two_channels or grayscale or almost_grayscale): # Grayscale or empty color channel
+                vol_ratio_bbox = ((bbox[3] - bbox[1]) * (bbox[2] - bbox[0])) / (img_3c.shape[0] * img_3c.shape[1]) 
+                if vol_ratio_bbox > 0.08:
+                    temp_pred = np.zeros_like(segs).astype(np.uint16)
+
+                    continue # our methods cannot handle large bboxes with multiple cells, better to just ignore
+
                 circles = detect_circular_object(img_3c_input)
                 if circles is not None and allow_circles:
                     kmeans_mask = np.expand_dims(circles, axis=-1)
                 else:
+
+                    n, x = np.histogram(img_3c_input.flatten(), bins=50)
+                    mean_list = []
+                    for i, el in enumerate(x[:-1]):
+                        mean = (el + x[i + 1]) / 2
+                        mean_list.append(mean)
+                    x = np.array(mean_list)
+
                     k = 2
                     kmeans_mask = kmean(img_3c_input, k=k).astype(np.uint8)
                     sh = kmeans_mask.shape
@@ -770,7 +797,6 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
                     if center_context < 0.5: # invert prediction if the central structure is considered as background
                         kmeans_mask = np.logical_not(kmeans_mask).astype(np.uint8)
-
                     if mask_edge(kmeans_mask) and not allow_circles:
                         kmeans_mask = np.logical_not(kmeans_mask).astype(np.uint8)
 
@@ -778,26 +804,11 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
                 temp_pred = np.zeros_like(segs).astype(np.uint16)
 
-                temp_pred[bbox[1]:bbox[3], bbox[0]:bbox[2]] = kmeans_mask[:,:,0]
-
-                #temp_pred = largest_connected_component(temp_pred).astype(np.uint8)
+                temp_pred[bbox[1]:bbox[3], bbox[0]:bbox[2]] = kmeans_mask[:, :, 0]
 
 
-            else:
+            elif model_name == 'mobileunet':
                 my_model_mask = my_model(torch.Tensor(img_256_padded.transpose(2, 0, 1)).unsqueeze(0))
-                '''
-                input_tensor = torch.Tensor(img_256_padded.transpose(2, 0, 1)).unsqueeze(0)
-                results1, results2 = [], []
-
-                thread1 = threading.Thread(target=infer_mobileunet, args=(models[0], input_tensor, results1))
-                thread2 = threading.Thread(target=infer_mobileunet, args=(models[1], input_tensor, results2))
-                thread1.start()
-                thread2.start()
-
-                # Wait for the threads to finish
-                thread1.join()
-                thread2.join()
-                '''
                 low_res_pred = postprocess_masks(my_model_mask, (newh, neww), (H, W))
                 low_res_pred = torch.sigmoid(low_res_pred)
                 low_res_pred = low_res_pred.squeeze().cpu().numpy()
@@ -808,53 +819,42 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
                 temp_pred = np.zeros_like(segs).astype(np.uint16)
 
                 temp_pred[bbox[1]:bbox[3], bbox[0]:bbox[2]] = my_model_mask
-                #temp_pred = largest_connected_component(temp_pred).astype(np.uint8)
-
-
-
 
         elif model_name == 'medsam':
             box256 = box256[None, ...] # (1, 4)
             my_model_mask, _ = my_model_inference(my_model_lite_model, image_embedding, box256, (newh, neww), (H, W))
+
         if args.debug_vis:
             if model_name != 'mobileunet':
                 bbox = list(box)
             cv2.imshow('img', cv2.resize(img_3c[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256, 256), interpolation=cv2.INTER_AREA))
 
-            
-
-            if model_name == 'mobileunet':
+            if model_name == 'mobileunet' or ((two_channels or grayscale or almost_grayscale) and microscopy_img):
                 cv2.imshow('test', cv2.resize(((temp_pred>0) * 255).astype(np.uint8)[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256,256), interpolation=cv2.INTER_AREA))
-
-                #cv2.imshow('gts', cv2.resize(((gts) * 255).astype(np.uint8)[box[1]:box[3], box[0]:box[2]], (256,256), interpolation=cv2.INTER_AREA))
+                if 'gts' in npz_data.keys():
+                    cv2.imshow('gts', cv2.resize(((gts) * 255).astype(np.uint8)[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256,256), interpolation=cv2.INTER_AREA))
 
             elif model_name == 'medsam':
-                cv2.imshow('test', cv2.resize(((my_model_mask[box[1]:box[3], box[0]:box[2]]>0) * 255).astype(np.uint8), (256,256), interpolation=cv2.INTER_AREA))
+
+                cv2.imshow('test', cv2.resize(((my_model_mask[bbox[1]:bbox[3], bbox[0]:bbox[2]]) * 255).astype(np.uint8), (256,256), interpolation=cv2.INTER_AREA))
+                if 'gts' in npz_data.keys():
+                    cv2.imshow('gts', cv2.resize(((gts) * 255).astype(np.uint8)[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256,256), interpolation=cv2.INTER_AREA))
 
             cv2.waitKey(0)
-            #cv2.destroyAllWindows()
 
 
-        if model_name == "mobileunet":
+        if model_name == "mobileunet" or ((grayscale or two_channels or almost_grayscale) and microscopy_img):
             segs[temp_pred>0] = idx
-            #to_update = (segs == 0) * (temp_pred > 0)
-            #segs[to_update] = idx
-            #dice_score = compute_dice((segs > 0).astype(np.uint8), (gts > 0).astype(np.uint8))
-            #if idx == len(boxes) - 1:
-            #    print('Dice', dice_score)
-
-
         else:
             segs[my_model_mask>0] = idx
-        gc.collect()
-        # print(f'{npz_name}, box: {box}, predicted iou: {np.round(iou_pred.item(), 4)}')
+        
     np.savez_compressed(
         join(pred_save_dir, npz_name),
         segs=segs,
     )
     # visualize image, mask and bounding box
     if save_overlay:
-        fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+        _, ax = plt.subplots(1, 3, figsize=(15, 5))
         ax[0].imshow(img_3c)
         ax[1].imshow(segs)
         ax[2].imshow(gts)
@@ -867,15 +867,13 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
         for i, box in enumerate(boxes):
             color = np.random.rand(3)
-            box_viz = box
+            #box_viz = box
             #show_box(box_viz, ax[1], edgecolor=color)
             show_mask((segs == i+1).astype(np.uint8), ax[1], mask_color=color)
 
         plt.tight_layout()
         plt.savefig(join(png_save_dir, npz_name.split(".")[0] + '.png'), dpi=300)
         plt.close()
-    gc.collect()
-    #return dice_score
 
 def ndgrid(*args,**kwargs):
     """
@@ -1019,7 +1017,6 @@ def box_vol(box3D):
 def box_center(box3D):
     return (int(box3D[0] + (box3D[3] - box3D[0]) / 2), int(box3D[1] + (box3D[4] - box3D[1]) / 2), int(box3D[2] + (box3D[5] - box3D[2]) / 2))
 def my_model_infer_npz_3D(img_npz_file, model_name):
-
     if model_name == 'medsam':
         model_path = 'work_dir/LiteMedSAM/lite_medsam.pth'
         my_model_lite_model = get_medsam(model_path)
@@ -1035,9 +1032,25 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
         gts = (cc3d.connected_components(gts, connectivity=26) > 0)
         boxes_3D = compute_3d_bounding_boxes(gts)
 
-
+    vals = []
     for idx, box3D in enumerate(boxes_3D, start=1):
+        x_min, y_min, z_min, x_max, y_max, z_max = box3D
+        vals += list(img_3D[z_min:z_max, y_min:y_max, x_min:x_max].flatten())
+    vals = np.array(vals)
 
+    n, x = np.histogram((vals).flatten(), bins=100)
+
+    step_size = (x[1] - x[0]) / 2
+    x = np.array([el - step_size for el in x[1:]])
+
+    new_th = GHT(n, x=x, nu=1e60, tau=1e-30)[0]
+
+
+    args.th = new_th
+    if model_name == 'th':
+        full_pred = (img_3D > args.th)
+    for idx, box3D in enumerate(boxes_3D, start=1):
+        print(idx, len(boxes_3D))
         segs_3d_temp = np.zeros_like(img_3D, dtype=np.uint16)
         x_min, y_min, z_min, x_max, y_max, z_max = box3D
 
@@ -1051,16 +1064,22 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
         sampled_z = np.arange(z_middle, max(z_max, z_middle+1), sampling_rate).astype(np.uint16)
         if max(z_max, z_middle) not in sampled_z:
             sampled_z = np.append(sampled_z, max(z_max, z_middle))
+            # make sure to predict for the last slice
 
 
         for z in range(z_middle, max(z_max, z_middle+1)):
 
             if z not in sampled_z:
                 continue
-
+            
             if model_name == 'th': # No slice-wise inference for thresholds
-                break
+                pred_2d = full_pred[z,:,:]
+                segs_3d_temp[z, y_min:y_max, x_min:x_max] = (pred_2d[y_min:y_max, x_min:x_max] == 1) * idx
+                continue
             img_2d = img_3D[z, :, :]
+
+            
+
             if len(img_2d.shape) == 2:
                 img_3c = np.repeat(img_2d[:, :, None], 3, axis=-1)
             else:
@@ -1126,8 +1145,10 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
         for z in range(z_middle-1, z_min, -1):
             if z not in sampled_z:
                 continue
-            if model_name == 'th':
-                break
+            if model_name == 'th': # No slice-wise inference for thresholds
+                pred_2d = full_pred[z,:,:]
+                segs_3d_temp[z, y_min:y_max, x_min:x_max] = (pred_2d[y_min:y_max, x_min:x_max] == 1) * idx
+                continue
             img_2d = img_3D[z, :, :]
             if len(img_2d.shape) == 2:
                 img_3c = np.repeat(img_2d[:, :, None], 3, axis=-1)
@@ -1173,16 +1194,18 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
                 segs_3d_temp[zs, img_2d_seg>0] = idx
 
         if model_name == 'th':
-            segs_3d_temp = (img_3D > args.th) * idx
-        curr_seg = (segs_3d_temp == idx) * 1
-
+            curr_seg = segs_3d_temp
+        else:
+            curr_seg = (segs_3d_temp == idx) * 1
         x_min, y_min, z_max, x_max, y_max, z_max = box3D
         if args.filter_background: # Omit everything outside the bbox
             outside_bbox_mask = np.zeros_like(segs_3d_temp)
             outside_bbox_mask[z_min:z_max, y_min:y_max, x_min:x_max] = 1
             # Apply the outside bounding box mask to the output mask
-            curr_seg[outside_bbox_mask == 0] = 0 # for th
-            segs_3d_temp[outside_bbox_mask == 0] = 0 # for everything else
+            if get_model(img_npz_file) == 'th':
+                curr_seg[outside_bbox_mask == 0] = 0 # for th
+            else:
+                segs_3d_temp[outside_bbox_mask == 0] = 0 # for everything else
         if args.force_volume: # try to push the tumor to bbox ratio within a certain range
             if model_name == 'th':
                 ratio = np.sum(curr_seg) / box_vol(box3D)
@@ -1211,14 +1234,16 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
                     if c_ratio == 0:
                         box_c = box_center(box3D)
                         curr_seg[box_c[2], box_c[1], box_c[0]] = 1
-        if np.sum(curr_seg) / box_vol(box3D) > 1:
-            print(f'[WARNING] Segmentation bleeds out of the bounding box with a seg/bbox ratio of {np.sum(curr_seg) / box_vol(box3D)}')
-
+        if np.sum(curr_seg > 0) / box_vol(box3D) > 1:
+            print(f'[WARNING] Segmentation bleeds out of the bounding box with a seg/bbox ratio of {np.sum(curr_seg > 0) / box_vol(box3D)}')
 
         if get_model(img_npz_file) == 'th':
             segs[curr_seg > 0] = idx
         else:
             segs[segs_3d_temp>0] = idx
+    if 'gts' in npz_data.keys():
+        dice = compute_dice((segs > 0), (npz_data['gts'] > 0))
+        print('Dice', compute_dice((segs > 0), (npz_data['gts'] > 0)))
     np.savez_compressed(
         join(pred_save_dir, npz_name),
         segs=segs,
@@ -1245,17 +1270,18 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
         plt.tight_layout()
         plt.savefig(join(png_save_dir, npz_name.split(".")[0] + '.png'), dpi=300)
         plt.close()
+    return dice
 
 def get_model(img_npz_file):
     if 'PET' in img_npz_file:
         return 'th'
-    if ('CT' in img_npz_file) or ('MR' in img_npz_file) or ('XRay' in img_npz_file) or ('Fundus' in img_npz_file) or ('X-Ray' in img_npz_file) or ('Endoscopy' in img_npz_file):
+    if ('CT' in img_npz_file) or ('MR' in img_npz_file) or ('XRay' in img_npz_file) or ('Fundus' in img_npz_file) or ('X-Ray' in img_npz_file) or ('Endoscopy' in img_npz_file) or ('Microscopy' in img_npz_file) or ('Microscope' in img_npz_file):
         return 'medsam'
     if 'US' in img_npz_file:
         return 'us_domain'
     if "Fundus" in img_npz_file:
         return 'oval'
-    else: # Dermoscopy, US, Microscopy, Mammography, OCT, Fundus
+    else: # Dermoscopy, US, Mammography, OCT, Fundus
         return 'mobileunet'
 
 if __name__ == '__main__':
@@ -1283,7 +1309,9 @@ if __name__ == '__main__':
         efficiency['time'].append(end_time - start_time)
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(current_time, 'file name:', basename(img_npz_file), 'time cost:', np.round(end_time - start_time, 4))
-
+    print(np.mean(dices))
+    plt.hist(dices)
+    plt.show()
 
     print('Average Time:', np.mean(efficiency['time']))
     efficiency_df = pd.DataFrame(efficiency)
