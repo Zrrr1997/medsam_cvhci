@@ -734,6 +734,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
     for idx, box in enumerate(boxes, start=1):
         box256 = resize_box_to_256(box, original_size=(H, W))
         bbox = list(box)
+        x_min, y_min, x_max, y_max = box
 
         if model_name == 'oct_th': 
 
