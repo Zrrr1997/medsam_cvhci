@@ -197,7 +197,7 @@ def kmean(img, k=3):
     return labels
 
 
-def largest_connected_component(segmentation):
+def largest_connected_component(segmentation, fill_holes=True):
 
 
     connected_components = cc3d.connected_components(segmentation, connectivity=26)
@@ -213,13 +213,10 @@ def largest_connected_component(segmentation):
 
     largest_ccp = (((connected_components == largest_label)) * 1).astype(np.uint8)
 
-
-    largest_ccp = cv2.resize(largest_ccp, None, fx=2, fy=2, interpolation=cv2.INTER_AREA)
-  
-    largest_ccp = binary_fill_holes(largest_ccp).astype(np.uint8)
-
-    
-    largest_ccp = cv2.resize(largest_ccp, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
+    if fill_holes:
+        largest_ccp = cv2.resize(largest_ccp, None, fx=2, fy=2, interpolation=cv2.INTER_AREA)
+        largest_ccp = binary_fill_holes(largest_ccp).astype(np.uint8)
+        largest_ccp = cv2.resize(largest_ccp, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
 
     if len(segmentation.shape) == 3:
         largest_ccp = np.expand_dims(largest_ccp, axis=-1)
@@ -410,7 +407,6 @@ def my_model_inference(my_model_model, img_embed, box_256, new_size, original_si
     Returns:
         tuple: A tuple containing the segmented image and the intersection over union (IoU) score.
     """
-    start = time()
     box_torch = torch.as_tensor(box_256[None, None, ...], dtype=torch.float, device=img_embed.device)
     sparse_embeddings, dense_embeddings = my_model_model.prompt_encoder(
         points = None,
@@ -556,7 +552,7 @@ def get_mobileunet_path(img_npz_file):
         return 'workdir_mobileunet/best_OCT.pth'
     elif 'US' in img_npz_file:
         return 'workdir_mobileunet/best_US.pth'
-    elif 'XRay' in img_npz_file:
+    elif 'XRay' in img_npz_file or 'CXR' in img_npz_file:
         return 'workdir_mobileunet/best_XRay.pth'
 
 def get_mobileunet(path):
@@ -624,7 +620,6 @@ def classify_us_domain(img, model_path):
 
 
 def detect_circular_object(image):
-    start = time
     # Convert the image to grayscale
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
@@ -728,7 +723,6 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             img_3c_input = img_3c[bbox[1]:bbox[3], bbox[0]:bbox[2]] # Crop image to bounding box
             if detect_circular_object(img_3c_input) is not None:
                 all_circles += 1
-    print(all_circles, len(boxes))
     if all_circles / len(boxes) > 0.35:
         allow_circles = True
 
@@ -740,8 +734,8 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
     for idx, box in enumerate(boxes, start=1):
         box256 = resize_box_to_256(box, original_size=(H, W))
         bbox = list(box)
-        oct_th = False
-        if oct_th: 
+
+        if model_name == 'oct_th': 
 
             img_gs = img_3c[:,:,0]
             x_min, y_min, x_max, y_max = box
@@ -848,10 +842,14 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
                 temp_pred = np.zeros_like(segs).astype(np.uint16)
 
                 temp_pred[bbox[1]:bbox[3], bbox[0]:bbox[2]] = my_model_mask
+                
 
-        elif model_name == 'medsam' and not oct_th:
+        elif model_name == 'medsam':
             box256 = box256[None, ...] # (1, 4)
             my_model_mask, _ = my_model_inference(my_model_lite_model, image_embedding, box256, (newh, neww), (H, W))
+
+            if 'US' in img_npz_file or 'X-Ray' in img_npz_file or 'XRay' in img_npz_file or 'CXR' in img_npz_file or 'Endoscopy' in img_npz_file or 'CT' in img_npz_file or 'MR' in img_npz_file:
+                my_model_mask = largest_connected_component(my_model_mask, fill_holes=False).astype(np.uint8)
 
         if args.debug_vis:
             if model_name != 'mobileunet':
@@ -875,9 +873,19 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
 
         if model_name == "mobileunet" or ((grayscale or two_channels or almost_grayscale) and microscopy_img):
+            if args.filter_background: # Omit everything outside the bbox
+                outside_bbox_mask = np.zeros_like(temp_pred)
+                outside_bbox_mask[y_min:y_max, x_min:x_max] = 1
+                temp_pred[outside_bbox_mask == 0] = 0 # for everything else
+
             segs[temp_pred>0] = idx
         else:
+            if args.filter_background: # Omit everything outside the bbox
+                outside_bbox_mask = np.zeros_like(my_model_mask)
+                outside_bbox_mask[y_min:y_max, x_min:x_max] = 1
+                my_model_mask[outside_bbox_mask == 0] = 0 # for everything else
             segs[my_model_mask>0] = idx
+
     if 'gts' in npz_data.keys():
         dice = compute_dice((segs > 0), (npz_data['gts'] > 0))
         print('Dice', compute_dice((segs > 0), (npz_data['gts'] > 0)))    
@@ -907,7 +915,6 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
         plt.tight_layout()
         plt.savefig(join(png_save_dir, npz_name.split(".")[0] + '.png'), dpi=300)
         plt.close()
-    return dice
 
 def ndgrid(*args,**kwargs):
     """
@@ -1084,9 +1091,12 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
     if model_name == 'th':
         full_pred = (img_3D > args.th)
     for idx, box3D in enumerate(boxes_3D, start=1):
-        print(idx, len(boxes_3D))
         segs_3d_temp = np.zeros_like(img_3D, dtype=np.uint16)
         x_min, y_min, z_min, x_max, y_max, z_max = box3D
+        
+        z_max = min(img_3D.shape[0] - 1, z_max)
+
+
 
         assert z_min <= z_max, f"z_min should be smaller than z_max, but got {z_min=} and {z_max=}"
         mid_slice_bbox_2d = np.array([x_min, y_min, x_max, y_max])
@@ -1094,7 +1104,7 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
 
         # infer from middle slice to the z_max
         # print(npz_name, 'infer from middle slice to the z_max')
-        sampling_rate = args.sampling_rate
+        sampling_rate = args.sampling_rate #+ overhead
         sampled_z = np.arange(z_middle, max(z_max, z_middle+1), sampling_rate).astype(np.uint16)
         if max(z_max, z_middle) not in sampled_z:
             sampled_z = np.append(sampled_z, max(z_max, z_middle))
@@ -1170,9 +1180,6 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
 
 
         # infer from middle slice to the z_max
-        # print(npz_name, 'infer from middle slice to the z_min')
-        # infer from middle slice to the z_max
-        # print(npz_name, 'infer from middle slice to the z_max')
         sampled_z = np.arange(z_min, z_middle-1, sampling_rate).astype(np.uint16)
         if z_middle-1 not in sampled_z:
             sampled_z = np.append(sampled_z, z_middle-1)
@@ -1304,17 +1311,18 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
         plt.tight_layout()
         plt.savefig(join(png_save_dir, npz_name.split(".")[0] + '.png'), dpi=300)
         plt.close()
-    return dice
 
 def get_model(img_npz_file):
     if 'PET' in img_npz_file:
         return 'th'
-    if ('CT' in img_npz_file) or ('MR' in img_npz_file) or ('XRay' in img_npz_file) or ('Fundus' in img_npz_file) or ('X-Ray' in img_npz_file) or ('Endoscopy' in img_npz_file) or ('Microscopy' in img_npz_file) or ('Microscope' in img_npz_file):
+    if ('CT' in img_npz_file) or ('MR' in img_npz_file) or ('XRay' in img_npz_file) or ('CXR' in img_npz_file) or ('Fundus' in img_npz_file) or ('X-Ray' in img_npz_file) or ('Endoscopy' in img_npz_file) or ('Microscopy' in img_npz_file) or ('Microscope' in img_npz_file) or ('US' in img_npz_file):
         return 'medsam'
     if 'US' in img_npz_file:
         return 'us_domain'
     if "Fundus" in img_npz_file:
         return 'oval'
+    if "OCT" in img_npz_file:
+        return 'oct_th'
     else: # Dermoscopy, US, Mammography, OCT, Fundus
         return 'mobileunet'
 
@@ -1336,16 +1344,14 @@ if __name__ == '__main__':
         if basename(img_npz_file).startswith('3D') or basename(img_npz_file).startswith('CT') or basename(img_npz_file).startswith('MR') or basename(img_npz_file).startswith('PET'):
             my_model_infer_npz_3D(img_npz_file, get_model(img_npz_file))
         else:
-            dices.append(my_model_infer_npz_2D(img_npz_file, get_model(img_npz_file)))
+            my_model_infer_npz_2D(img_npz_file, get_model(img_npz_file))
 
         end_time = time()
         efficiency['case'].append(basename(img_npz_file))
         efficiency['time'].append(end_time - start_time)
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(current_time, 'file name:', basename(img_npz_file), 'time cost:', np.round(end_time - start_time, 4))
-    print(np.mean(dices))
-    plt.hist(dices)
-    plt.show()
+
 
     print('Average Time:', np.mean(efficiency['time']))
     efficiency_df = pd.DataFrame(efficiency)
