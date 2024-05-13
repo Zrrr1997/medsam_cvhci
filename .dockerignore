@@ -5,3 +5,9 @@
 .git
 **/test_demo
 test_demo/**/*
+data_/*
+litemedsam-egg-info/*
+*.tar.gz
+overlay/*
+__pycache__/*
+

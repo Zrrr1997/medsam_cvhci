@@ -3,17 +3,11 @@ import os
 from os import makedirs
 from os.path import join, basename
 import numpy as np
+np.random.seed(2024)
+
 #import pandas as pd # Optional import 
 
-import torch
-import torch.nn.functional as F
-import torch.nn as nn
 
-#%% set seeds
-torch.set_float32_matmul_precision('high')
-torch.manual_seed(2024)
-torch.cuda.manual_seed(2024)
-np.random.seed(2024)
 
 
 import cv2
@@ -154,7 +148,7 @@ if save_overlay:
 
 
 makedirs(pred_save_dir, exist_ok=True)
-device = torch.device(args.device)
+
 image_size = 256
 
 def resize_longest_side(image, target_length=256):
@@ -261,8 +255,10 @@ def GHT(n, x=None, nu=0, tau=0, kappa=0, omega=0.5):
   return argmax(x, f0 + f1), f0 + f1
 
 
-@torch.no_grad()
 def postprocess_masks(masks, new_size, original_size):
+    import torch
+    import torch.nn.functional as F
+    #%% set seeds
     """
     Do cropping and resizing
 
@@ -280,16 +276,17 @@ def postprocess_masks(masks, new_size, original_size):
     torch.Tensor
         the upsampled mask to the original size
     """
-    # Crop
-    masks = masks[..., :new_size[0], :new_size[1]]
-    # Resize
+    with torch.no_grad():
+        # Crop
+        masks = masks[..., :new_size[0], :new_size[1]]
+        # Resize
 
-    masks = F.interpolate(
-        masks,
-        size=(original_size[0], original_size[1]),
-        mode="bilinear",
-        align_corners=False,
-    )
+        masks = F.interpolate(
+            masks,
+            size=(original_size[0], original_size[1]),
+            mode="bilinear",
+            align_corners=False,
+        )
     return masks
 
 
@@ -397,20 +394,10 @@ def resize_box_to_256(box, original_size):
     return new_box
 
 
-@torch.no_grad()
 def my_model_inference(my_model_model, img_embed, box_256, new_size, original_size):
 
-    start = time()
     import torch
-    import torch.nn.functional as F
-    import torch.nn as nn
-
     #%% set seeds
-    torch.set_float32_matmul_precision('high')
-    torch.manual_seed(2024)
-    torch.cuda.manual_seed(2024)
-    np.random.seed(2024)
-    print('torch import', time() - start)
     """
     Perform inference using the my_model model.
 
@@ -423,30 +410,37 @@ def my_model_inference(my_model_model, img_embed, box_256, new_size, original_si
     Returns:
         tuple: A tuple containing the segmented image and the intersection over union (IoU) score.
     """
-    box_torch = torch.as_tensor(box_256[None, None, ...], dtype=torch.float, device=img_embed.device)
-    sparse_embeddings, dense_embeddings = my_model_model.prompt_encoder(
-        points = None,
-        boxes = box_torch,
-        masks = None,
-    )
-    low_res_logits, iou = my_model_model.mask_decoder(
-        image_embeddings=img_embed, # (B, 256, 64, 64)
-        image_pe=my_model_model.prompt_encoder.get_dense_pe(), # (1, 256, 64, 64)
-        sparse_prompt_embeddings=sparse_embeddings, # (B, 2, 256)
-        dense_prompt_embeddings=dense_embeddings, # (B, 256, 64, 64)
-        multimask_output=False
-    )
+    with torch.no_grad():
+        box_torch = torch.as_tensor(box_256[None, None, ...], dtype=torch.float, device=img_embed.device)
+        sparse_embeddings, dense_embeddings = my_model_model.prompt_encoder(
+            points = None,
+            boxes = box_torch,
+            masks = None,
+        )
+        low_res_logits, iou = my_model_model.mask_decoder(
+            image_embeddings=img_embed, # (B, 256, 64, 64)
+            image_pe=my_model_model.prompt_encoder.get_dense_pe(), # (1, 256, 64, 64)
+            sparse_prompt_embeddings=sparse_embeddings, # (B, 2, 256)
+            dense_prompt_embeddings=dense_embeddings, # (B, 256, 64, 64)
+            multimask_output=False
+        )
 
 
 
-    low_res_pred = postprocess_masks(low_res_logits, new_size, original_size)
-    low_res_pred = torch.sigmoid(low_res_pred)
-    low_res_pred = low_res_pred.squeeze().cpu().numpy()
-    my_model_seg = (low_res_pred > 0.5).astype(np.uint16)
+        low_res_pred = postprocess_masks(low_res_logits, new_size, original_size)
+        low_res_pred = torch.sigmoid(low_res_pred)
+        low_res_pred = low_res_pred.squeeze().cpu().numpy()
+        my_model_seg = (low_res_pred > 0.5).astype(np.uint16)
 
     return my_model_seg, iou
 
 def get_medsam(my_model_checkpoint):
+    import torch
+    #%% set seeds
+    torch.set_float32_matmul_precision('high')
+    torch.manual_seed(2024)
+    torch.cuda.manual_seed(2024)
+    device = torch.device(args.device)
     my_model_lite_image_encoder = TinyViT(
         img_size=256,
         in_chans=3,
@@ -502,6 +496,9 @@ def get_medsam(my_model_checkpoint):
 
 
 def grabcut_pred(rect, mask, image, new_size, original_size):
+    import torch
+    import torch.nn.functional as F
+    #%% set seeds
     fgModel = np.zeros((1, 65), dtype="float")
     bgModel = np.zeros((1, 65), dtype="float")
     # apply GrabCut using the the bounding box segmentation method
@@ -572,6 +569,7 @@ def get_mobileunet_path(img_npz_file):
         return 'workdir_mobileunet/best_XRay.pth'
 
 def get_mobileunet(path):
+    import torch
     my_model = MobileUNet()
     my_model_checkpoint = torch.load(path, map_location='cpu')
     my_model.load_state_dict(my_model_checkpoint['model'])
@@ -602,8 +600,13 @@ def compute_dice(pred, gt):
 
 # Create an instance of the model
 
-@torch.no_grad()
 def classify_us_domain(img, model_path):
+    import torch
+    import torch.nn as nn
+    #%% set seeds
+    torch.set_float32_matmul_precision('high')
+    torch.manual_seed(2024)
+    torch.cuda.manual_seed(2024)
     n = Compose([
         ToTensor(),
         Normalize(
@@ -625,11 +628,12 @@ def classify_us_domain(img, model_path):
         model.classifier[3] = nn.Linear(1024, 2)
         model.load_state_dict(model_weights[idx])
         model.eval()
-        domain_prediction.append(
-            model(
-                norm_img.unsqueeze(0)
-                ).argmax()
-        )
+        with torch.no_grad():
+            domain_prediction.append(
+                model(
+                    norm_img.unsqueeze(0)
+                    ).argmax()
+            )
 
     domain_prediction = stats.mode(domain_prediction)
     return "babyhead" if domain_prediction[0] == 0 else "breast"
@@ -721,9 +725,11 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
 
     if model_name == 'medsam' and not ((two_channels or grayscale or almost_grayscale) and microscopy_img):
+        import torch
         model_path = 'work_dir/LiteMedSAM/lite_medsam.pth'
         my_model_lite_model = get_medsam(model_path)
         with torch.no_grad():
+            device = torch.device(args.device)
             img_256_tensor = torch.tensor(img_256_padded).float().permute(2, 0, 1).unsqueeze(0).to(device) # (B, 3, 256, 256)
             image_embedding = my_model_lite_model.image_encoder(img_256_tensor)
         
@@ -776,6 +782,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
 
         if model_name == 'grabcut':
+            import torch
             my_model_mask = grabcut_pred(box256, segs, img_256_padded_non_norm, (newh, neww), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
 
         elif model_name == 'oval':
@@ -848,6 +855,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
 
             elif model_name == 'mobileunet':
+                import torch
                 my_model_mask = my_model(torch.Tensor(img_256_padded.transpose(2, 0, 1)).unsqueeze(0))
                 low_res_pred = postprocess_masks(my_model_mask, (newh, neww), (H, W))
                 low_res_pred = torch.sigmoid(low_res_pred)
@@ -865,8 +873,8 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             box256 = box256[None, ...] # (1, 4)
             my_model_mask, _ = my_model_inference(my_model_lite_model, image_embedding, box256, (newh, neww), (H, W))
 
-            #if 'US' in img_npz_file or 'X-Ray' in img_npz_file or 'XRay' in img_npz_file or 'CXR' in img_npz_file or 'Endoscopy' in img_npz_file or 'CT' in img_npz_file or 'MR' in img_npz_file:
-            #    my_model_mask = largest_connected_component(my_model_mask, fill_holes=False).astype(np.uint8)
+            if 'US' in img_npz_file or 'X-Ray' in img_npz_file or 'XRay' in img_npz_file or 'CXR' in img_npz_file or 'Endoscopy' in img_npz_file or 'CT' in img_npz_file or 'MR' in img_npz_file:
+                my_model_mask = largest_connected_component(my_model_mask, fill_holes=False).astype(np.uint8)
 
         if args.debug_vis:
             if model_name != 'mobileunet':
@@ -1159,8 +1167,10 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
 
 
             if model_name == 'medsam':
+                import torch
                 if z in sampled_z:
                     # convert the shape to (3, H, W)
+                    device = torch.device(args.device)
                     img_256_tensor = torch.tensor(img_256).float().permute(2, 0, 1).unsqueeze(0).to(device)
                     # get the image embedding
                     with torch.no_grad():
@@ -1177,6 +1187,7 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
                     box_256 = resize_box_to_256(mid_slice_bbox_2d, original_size=(H, W))
 
             if model_name == 'grabcut':
+                import torch
                 img_2d_seg = grabcut_pred(box_256.astype(np.uint8), np.zeros_like(img_256, dtype=np.uint8), img_256, (new_H, new_W), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
             elif model_name == 'medsam':
 
@@ -1224,6 +1235,8 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
             img_256 = pad_image(img_256)
 
             if model_name == 'medsam':
+                import torch
+                device = torch.device(args.device)
                 img_256_tensor = torch.tensor(img_256).float().permute(2, 0, 1).unsqueeze(0).to(device)
                 # get the image embedding
                 with torch.no_grad():
@@ -1238,6 +1251,7 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
             else:
                 box_256 = resize_box_to_256(mid_slice_bbox_2d, original_size=(H, W))
             if model_name == 'grabcut':
+                import torch
                 img_2d_seg = grabcut_pred(box_256.astype(np.uint8), np.zeros_like(img_256, dtype=np.uint8), img_256, (new_H, new_W), (H, W)).to(torch.uint8) # GrabCut works on non-normalized images
             elif model_name == 'medsam':
                 img_2d_seg, _ = my_model_inference(my_model_lite_model, image_embedding, box_256, [new_H, new_W], [H, W])
@@ -1340,7 +1354,7 @@ def get_model(img_npz_file):
         return 'oval'
     if "OCT" in img_npz_file:
         return 'oct_th'
-    else: # Dermoscopy, US, Mammography, OCT, Fundus
+    else: # Dermoscopy, Mammography 
         return 'mobileunet'
 
 if __name__ == '__main__':
