@@ -923,7 +923,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
         plt.tight_layout()
         plt.savefig(join(png_save_dir, npz_name.split(".")[0] + '.png'), dpi=300)
         plt.close()
-    return dice
+    #return dice
 def ndgrid(*args,**kwargs):
     """
     Same as calling ``meshgrid`` with *indexing* = ``'ij'`` (see
@@ -1352,14 +1352,14 @@ if __name__ == '__main__':
         if basename(img_npz_file).startswith('3D') or basename(img_npz_file).startswith('CT') or basename(img_npz_file).startswith('MR') or basename(img_npz_file).startswith('PET'):
             my_model_infer_npz_3D(img_npz_file, get_model(img_npz_file))
         else:
-            dices.append(my_model_infer_npz_2D(img_npz_file, get_model(img_npz_file)))
+            my_model_infer_npz_2D(img_npz_file, get_model(img_npz_file))
 
         end_time = time()
         efficiency['case'].append(basename(img_npz_file))
         efficiency['time'].append(end_time - start_time)
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(current_time, 'file name:', basename(img_npz_file), 'time cost:', np.round(end_time - start_time, 4))
-    print(np.mean(dices))
+    #print(np.mean(dices))
 
 
     
