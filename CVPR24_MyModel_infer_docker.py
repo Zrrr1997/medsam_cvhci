@@ -1,4 +1,3 @@
-from time import time
 import os
 from os import makedirs
 from os.path import join, basename
@@ -7,29 +6,10 @@ np.random.seed(2024)
 
 #import pandas as pd # Optional import 
 
-
-
-
-import cv2
-from scipy.ndimage import binary_dilation, binary_erosion, binary_fill_holes, distance_transform_edt
-from scipy.interpolate import interpn
-from scipy import stats
-import cc3d
-
-from torchvision.models import get_model as tv_get_model
-from torchvision.transforms import Compose, ToTensor, Normalize
-
-from segment_anything.modeling import MaskDecoder, PromptEncoder, TwoWayTransformer
-from tiny_vit_sam import TinyViT
-from utils.mobileunet import MobileUNet
-from utils.medsam_model import my_model_Lite
-
 import argparse
-from collections import OrderedDict
-from datetime import datetime
 from glob import glob
 from tqdm import tqdm
-from matplotlib import pyplot as plt
+
 
 
 parser = argparse.ArgumentParser()
@@ -152,7 +132,7 @@ makedirs(pred_save_dir, exist_ok=True)
 image_size = 256
 
 def resize_longest_side(image, target_length=256):
-
+    import cv2
     """
     Resize image to target_length while keeping the aspect ratio
     Expects a numpy array with shape HxWxC in uint8 format.
@@ -181,6 +161,8 @@ def pad_image(image, target_size=256):
     return image_padded
 
 def kmean(img, k=3):
+    import cv2
+
     or_shape = img.shape
     img = img.reshape((-1, 3))
     img = np.float32(img)
@@ -196,6 +178,10 @@ def kmean(img, k=3):
 
 
 def largest_connected_component(segmentation, fill_holes=True):
+    import cv2
+    from scipy.ndimage import binary_fill_holes
+    import cc3d
+
 
 
     connected_components = cc3d.connected_components(segmentation, connectivity=26)
@@ -314,11 +300,15 @@ def show_mask(mask, ax, mask_color=None, alpha=0.5):
     ax.imshow(mask_image)
 
 def show_img_and_box(img,box):
+    from matplotlib import pyplot as plt
+
     _, ax = plt.subplots()
     ax.imshow(img)
     show_box(box,ax)
 
 def show_box(box, ax, edgecolor='blue'):
+    from matplotlib import pyplot as plt
+
     """
     show bounding box on the image
 
@@ -436,6 +426,11 @@ def my_model_inference(my_model_model, img_embed, box_256, new_size, original_si
 
 def get_medsam(my_model_checkpoint):
     import torch
+    from segment_anything.modeling import MaskDecoder, PromptEncoder, TwoWayTransformer
+    from tiny_vit_sam import TinyViT
+    from utils.medsam_model import my_model_Lite
+
+
     #%% set seeds
     torch.set_float32_matmul_precision('high')
     torch.manual_seed(2024)
@@ -498,6 +493,8 @@ def get_medsam(my_model_checkpoint):
 def grabcut_pred(rect, mask, image, new_size, original_size):
     import torch
     import torch.nn.functional as F
+    import cv2
+
     #%% set seeds
     fgModel = np.zeros((1, 65), dtype="float")
     bgModel = np.zeros((1, 65), dtype="float")
@@ -535,6 +532,8 @@ def grabcut_pred(rect, mask, image, new_size, original_size):
     return masks
 
 def guess_ellipse(img, rect, mask):
+    import cv2
+
     x_min, y_min, x_max, y_max = rect
     height, width = y_max - y_min, x_max - x_min
     #fig, ax = plt.subplots()
@@ -569,6 +568,7 @@ def get_mobileunet_path(img_npz_file):
         return 'workdir_mobileunet/best_XRay.pth'
 
 def get_mobileunet(path):
+    from utils.mobileunet import MobileUNet
     import torch
     my_model = MobileUNet()
     my_model_checkpoint = torch.load(path, map_location='cpu')
@@ -603,6 +603,10 @@ def compute_dice(pred, gt):
 def classify_us_domain(img, model_path):
     import torch
     import torch.nn as nn
+    from scipy import stats
+    from torchvision.models import get_model as tv_get_model
+    from torchvision.transforms import Compose, ToTensor, Normalize
+
     #%% set seeds
     torch.set_float32_matmul_precision('high')
     torch.manual_seed(2024)
@@ -640,6 +644,8 @@ def classify_us_domain(img, model_path):
 
 
 def detect_circular_object(image):
+    import cv2
+
     # Convert the image to grayscale
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
@@ -679,6 +685,8 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
     if 'boxes' in npz_data.keys():
         boxes = npz_data['boxes']
     else:
+        import cc3d
+
         gts = npz_data['gts']
         connected_components = cc3d.connected_components(gts, connectivity=26)
 
@@ -829,12 +837,6 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
                     kmeans_mask = np.expand_dims(circles, axis=-1)
                 else:
 
-                    n, x = np.histogram(img_3c_input.flatten(), bins=50)
-                    mean_list = []
-                    for i, el in enumerate(x[:-1]):
-                        mean = (el + x[i + 1]) / 2
-                        mean_list.append(mean)
-                    x = np.array(mean_list)
 
                     k = 2
                     kmeans_mask = kmean(img_3c_input, k=k).astype(np.uint8)
@@ -873,10 +875,11 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             box256 = box256[None, ...] # (1, 4)
             my_model_mask, _ = my_model_inference(my_model_lite_model, image_embedding, box256, (newh, neww), (H, W))
 
-            if 'US' in img_npz_file or 'X-Ray' in img_npz_file or 'XRay' in img_npz_file or 'CXR' in img_npz_file or 'Endoscopy' in img_npz_file or 'CT' in img_npz_file or 'MR' in img_npz_file:
-                my_model_mask = largest_connected_component(my_model_mask, fill_holes=False).astype(np.uint8)
+
 
         if args.debug_vis:
+            import cv2
+
             if model_name != 'mobileunet':
                 bbox = list(box)
             cv2.imshow('img', cv2.resize(img_3c[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256, 256), interpolation=cv2.INTER_AREA))
@@ -920,6 +923,8 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
     )
     # visualize image, mask and bounding box
     if save_overlay:
+        from matplotlib import pyplot as plt
+
         _, ax = plt.subplots(1, 3, figsize=(15, 5))
         ax[0].imshow(img_3c)
         ax[1].imshow(segs)
@@ -1009,6 +1014,8 @@ def signed_bwdist(im):
     return im
 
 def bwdist(im):
+    from scipy.ndimage import distance_transform_edt
+
     '''
     Find distance map of image
     '''
@@ -1016,6 +1023,8 @@ def bwdist(im):
     return dist_im
 
 def interp_shape(top, bottom, precision):
+    from scipy.interpolate import interpn
+
     '''
     Interpolate between two contours
 
@@ -1061,6 +1070,7 @@ def interp_shape(top, bottom, precision):
     return out
 
 def compute_3d_bounding_boxes(binary_mask):
+    import cc3d
 
     # Label connected components
     connected_components = cc3d.connected_components(binary_mask, connectivity=26)
@@ -1094,6 +1104,8 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
     if 'boxes' in npz_data.keys():
         boxes_3D = npz_data['boxes'] # [[x_min, y_min, z_min, x_max, y_max, z_max]]
     else:
+        import cc3d
+
         gts = npz_data['gts']
         gts = (cc3d.connected_components(gts, connectivity=26) > 0)
         boxes_3D = compute_3d_bounding_boxes(gts)
@@ -1279,6 +1291,8 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
             else:
                 segs_3d_temp[outside_bbox_mask == 0] = 0 # for everything else
         if args.force_volume: # try to push the tumor to bbox ratio within a certain range
+            from scipy.ndimage import binary_dilation, binary_erosion
+
             if model_name == 'th':
                 ratio = np.sum(curr_seg) / box_vol(box3D)
                 structuring_element = np.ones((2, 2, 2), dtype=np.uint8)
@@ -1287,8 +1301,10 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
                     box_c = box_center(box3D)
                     curr_seg[box_c[2], box_c[1], box_c[0]] = 1
                 if ratio < args.lower_interval:
+
                     c_ratio = ratio
                     while c_ratio < args.lower_interval:
+        
                         curr_seg = binary_dilation(curr_seg, structure=structuring_element)
                         c_ratio = np.sum(curr_seg / box_vol(box3D))
                     if c_ratio >= 1.0:
@@ -1323,6 +1339,8 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
 
     # visualize image, mask and bounding box
     if save_overlay:
+        from matplotlib import pyplot as plt
+
         idx = int(segs.shape[0] / 2)
         fig, ax = plt.subplots(1, 2, figsize=(10, 5))
         ax[0].imshow(img_3D[idx], cmap='gray')
@@ -1360,15 +1378,9 @@ def get_model(img_npz_file):
 if __name__ == '__main__':
     img_npz_files = sorted(glob(join(data_root, '*.npz'), recursive=True))
     all_files = len(img_npz_files)
-    already_computed = [el for el in os.listdir(pred_save_dir) if 'npz' in el][:-1] # omit last ones
-    img_npz_files = [el for el in img_npz_files if el.split('/')[-1] not in already_computed]
-    print(all_files - len(img_npz_files), f'files have already been computed. Predicting for the rest of the {len(img_npz_files)} files...')
-    efficiency = OrderedDict()
-    efficiency['case'] = []
-    efficiency['time'] = []
+
     dices = []
     for img_npz_file in tqdm(img_npz_files):
-        start_time = time()
         print('Using', get_model(img_npz_file))
         print(img_npz_file)
 
@@ -1377,11 +1389,6 @@ if __name__ == '__main__':
         else:
             my_model_infer_npz_2D(img_npz_file, get_model(img_npz_file))
 
-        end_time = time()
-        efficiency['case'].append(basename(img_npz_file))
-        efficiency['time'].append(end_time - start_time)
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(current_time, 'file name:', basename(img_npz_file), 'time cost:', np.round(end_time - start_time, 4))
 
 
     '''

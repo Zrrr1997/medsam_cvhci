@@ -3,7 +3,7 @@ import os
 from os import makedirs
 from os.path import join, basename
 import numpy as np
-#import pandas as pd # Optional import 
+import pandas as pd # Optional import 
 
 import torch
 import torch.nn.functional as F
@@ -410,7 +410,6 @@ def my_model_inference(my_model_model, img_embed, box_256, new_size, original_si
     torch.manual_seed(2024)
     torch.cuda.manual_seed(2024)
     np.random.seed(2024)
-    print('torch import', time() - start)
     """
     Perform inference using the my_model model.
 
@@ -822,13 +821,6 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
                     kmeans_mask = np.expand_dims(circles, axis=-1)
                 else:
 
-                    n, x = np.histogram(img_3c_input.flatten(), bins=50)
-                    mean_list = []
-                    for i, el in enumerate(x[:-1]):
-                        mean = (el + x[i + 1]) / 2
-                        mean_list.append(mean)
-                    x = np.array(mean_list)
-
                     k = 2
                     kmeans_mask = kmean(img_3c_input, k=k).astype(np.uint8)
                     sh = kmeans_mask.shape
@@ -865,8 +857,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             box256 = box256[None, ...] # (1, 4)
             my_model_mask, _ = my_model_inference(my_model_lite_model, image_embedding, box256, (newh, neww), (H, W))
 
-            #if 'US' in img_npz_file or 'X-Ray' in img_npz_file or 'XRay' in img_npz_file or 'CXR' in img_npz_file or 'Endoscopy' in img_npz_file or 'CT' in img_npz_file or 'MR' in img_npz_file:
-            #    my_model_mask = largest_connected_component(my_model_mask, fill_holes=False).astype(np.uint8)
+
 
         if args.debug_vis:
             if model_name != 'mobileunet':
@@ -932,7 +923,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
         plt.tight_layout()
         plt.savefig(join(png_save_dir, npz_name.split(".")[0] + '.png'), dpi=300)
         plt.close()
-
+    return dice
 def ndgrid(*args,**kwargs):
     """
     Same as calling ``meshgrid`` with *indexing* = ``'ij'`` (see
@@ -1340,7 +1331,7 @@ def get_model(img_npz_file):
         return 'oval'
     if "OCT" in img_npz_file:
         return 'oct_th'
-    else: # Dermoscopy, US, Mammography, OCT, Fundus
+    else: # Dermoscopy, US, Mammography
         return 'mobileunet'
 
 if __name__ == '__main__':
@@ -1361,16 +1352,17 @@ if __name__ == '__main__':
         if basename(img_npz_file).startswith('3D') or basename(img_npz_file).startswith('CT') or basename(img_npz_file).startswith('MR') or basename(img_npz_file).startswith('PET'):
             my_model_infer_npz_3D(img_npz_file, get_model(img_npz_file))
         else:
-            my_model_infer_npz_2D(img_npz_file, get_model(img_npz_file))
+            dices.append(my_model_infer_npz_2D(img_npz_file, get_model(img_npz_file)))
 
         end_time = time()
         efficiency['case'].append(basename(img_npz_file))
         efficiency['time'].append(end_time - start_time)
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(current_time, 'file name:', basename(img_npz_file), 'time cost:', np.round(end_time - start_time, 4))
+    print(np.mean(dices))
 
 
-    '''
+    
     print('Average Time:', np.mean(efficiency['time']))
     efficiency_df = pd.DataFrame(efficiency)
     file_path = join(pred_save_dir, 'efficiency.csv')
@@ -1378,4 +1370,4 @@ if __name__ == '__main__':
         efficiency_df.to_csv(file_path, mode='a', index=False, header=False)
     else:
        efficiency_df.to_csv(join(pred_save_dir, 'efficiency.csv'), index=False)
-    '''
+    
