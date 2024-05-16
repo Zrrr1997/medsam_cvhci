@@ -719,17 +719,6 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
     rgb = [np.sum(img_3c[:,:,i]) for i in range(3)]
 
 
-    if model_name == 'medsam' and not ((two_channels or grayscale or almost_grayscale) and microscopy_img):
-        model_path = 'work_dir/LiteMedSAM/lite_medsam.pth'
-        my_model_lite_model = get_medsam(model_path)
-        with torch.no_grad():
-            img_256_tensor = torch.tensor(img_256_padded).float().permute(2, 0, 1).unsqueeze(0).to(device) # (B, 3, 256, 256)
-            image_embedding = my_model_lite_model.image_encoder(img_256_tensor)
-        
-
-
-
-
     allow_circles = False
     all_circles = 0
     if microscopy_img and grayscale:  
@@ -740,6 +729,25 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
                 all_circles += 1
     if all_circles / len(boxes) > 0.35:
         allow_circles = True
+
+    if model_name == 'medsam' and not ((grayscale or almost_grayscale) and microscopy_img):
+        model_path = 'work_dir/LiteMedSAM/lite_medsam.pth'
+        my_model_lite_model = get_medsam(model_path)
+        with torch.no_grad():
+            img_256_tensor = torch.tensor(img_256_padded).float().permute(2, 0, 1).unsqueeze(0).to(device) # (B, 3, 256, 256)
+            image_embedding = my_model_lite_model.image_encoder(img_256_tensor)
+    if allow_circles:
+        model_path = 'work_dir/LiteMedSAM/lite_medsam.pth'
+        my_model_lite_model = get_medsam(model_path)
+        with torch.no_grad():
+            img_256_tensor = torch.tensor(img_256_padded).float().permute(2, 0, 1).unsqueeze(0).to(device) # (B, 3, 256, 256)
+            image_embedding = my_model_lite_model.image_encoder(img_256_tensor)
+        
+
+
+
+
+
 
     
     if model_name == 'mobileunet':
@@ -781,7 +789,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             tmp_prediction = np.zeros_like(segs)
             my_model_mask = guess_ellipse(img_3c, box, tmp_prediction)
 
-        elif (model_name == 'mobileunet') or ((grayscale or two_channels or almost_grayscale) and microscopy_img):
+        elif (model_name == 'mobileunet') or ((grayscale  or almost_grayscale) and microscopy_img and not allow_circles):
 
             bbox = list(box)
 
@@ -809,7 +817,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
 
             img_256_padded = pad_image(img_256_norm, 256)
 
-            if microscopy_img and (two_channels or grayscale or almost_grayscale): # Grayscale or empty color channel
+            if microscopy_img and (grayscale or almost_grayscale): # Grayscale or empty color channel
                 vol_ratio_bbox = ((bbox[3] - bbox[1]) * (bbox[2] - bbox[0])) / (img_3c.shape[0] * img_3c.shape[1]) 
                 if vol_ratio_bbox > 0.08:
                     temp_pred = np.zeros_like(segs).astype(np.uint16)
@@ -817,7 +825,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
                     continue # our methods cannot handle large bboxes with multiple cells, better to just ignore
 
                 circles = detect_circular_object(img_3c_input)
-                if circles is not None and allow_circles:
+                if circles is not None and allow_circles and False:
                     kmeans_mask = np.expand_dims(circles, axis=-1)
                 else:
 
@@ -866,7 +874,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             #cv2.imshow('img_full', cv2.resize(img_3c, (256, 256), interpolation=cv2.INTER_AREA))
             #cv2.imshow('img_full', img_3c)
 
-            if model_name == 'mobileunet' or ((two_channels or grayscale or almost_grayscale) and microscopy_img):
+            if model_name == 'mobileunet' or ((grayscale or almost_grayscale) and microscopy_img and not allow_circles):
                 cv2.imshow('test', cv2.resize(((temp_pred>0) * 255).astype(np.uint8)[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256,256), interpolation=cv2.INTER_AREA))
                 if 'gts' in npz_data.keys():
                     cv2.imshow('gts', cv2.resize(((gts) * 255).astype(np.uint8)[bbox[1]:bbox[3], bbox[0]:bbox[2]], (256,256), interpolation=cv2.INTER_AREA))
@@ -880,7 +888,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             cv2.waitKey(0)
 
 
-        if model_name == "mobileunet" or ((grayscale or two_channels or almost_grayscale) and microscopy_img):
+        if model_name == "mobileunet" or ((grayscale  or almost_grayscale) and microscopy_img and not allow_circles):
             if args.filter_background: # Omit everything outside the bbox
                 outside_bbox_mask = np.zeros_like(temp_pred)
                 outside_bbox_mask[y_min:y_max, x_min:x_max] = 1
@@ -923,7 +931,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
         plt.tight_layout()
         plt.savefig(join(png_save_dir, npz_name.split(".")[0] + '.png'), dpi=300)
         plt.close()
-    #return dice
+
 def ndgrid(*args,**kwargs):
     """
     Same as calling ``meshgrid`` with *indexing* = ``'ij'`` (see
@@ -1118,16 +1126,20 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
             sampled_z = np.append(sampled_z, max(z_max, z_middle))
             # make sure to predict for the last slice
 
-
+        if model_name == 'th':
+            segs_3d_temp[z_min:z_max, y_min:y_max, x_min:x_max] = (full_pred[z_min:z_max, y_min:y_max, x_min:x_max] == 1) 
         for z in range(z_middle, max(z_max, z_middle+1)):
+
+            if model_name == 'th': # No slice-wise inference for thresholds
+                break
+                #pred_2d = full_pred[z,:,:]
+                #segs_3d_temp[z, y_min:y_max, x_min:x_max] = (pred_2d[y_min:y_max, x_min:x_max] == 1) * idx
+                #continue
 
             if z not in sampled_z:
                 continue
             
-            if model_name == 'th': # No slice-wise inference for thresholds
-                pred_2d = full_pred[z,:,:]
-                segs_3d_temp[z, y_min:y_max, x_min:x_max] = (pred_2d[y_min:y_max, x_min:x_max] == 1) * idx
-                continue
+
             img_2d = img_3D[z, :, :]
 
             
@@ -1192,12 +1204,14 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
         if z_middle-1 not in sampled_z:
             sampled_z = np.append(sampled_z, z_middle-1)
         for z in range(z_middle-1, z_min, -1):
+            if model_name == 'th': # No slice-wise inference for thresholds
+                break
+                #pred_2d = full_pred[z,:,:]
+                #segs_3d_temp[z, y_min:y_max, x_min:x_max] = (pred_2d[y_min:y_max, x_min:x_max] == 1) * idx
+                #continue
             if z not in sampled_z:
                 continue
-            if model_name == 'th': # No slice-wise inference for thresholds
-                pred_2d = full_pred[z,:,:]
-                segs_3d_temp[z, y_min:y_max, x_min:x_max] = (pred_2d[y_min:y_max, x_min:x_max] == 1) * idx
-                continue
+
             img_2d = img_3D[z, :, :]
             if len(img_2d.shape) == 2:
                 img_3c = np.repeat(img_2d[:, :, None], 3, axis=-1)
@@ -1242,52 +1256,50 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
                 img_2d_seg = interp_shape((segs_3d_temp[z] == idx).astype(np.uint8), (segs_3d_temp[sampled_z[z_ind + 1]] == idx).astype(np.uint8), step_size * (zs - z)).astype(np.uint8)
                 segs_3d_temp[zs, img_2d_seg>0] = idx
 
-        if model_name == 'th':
-            curr_seg = segs_3d_temp
-        else:
-            curr_seg = (segs_3d_temp == idx) * 1
+        #if model_name != 'th':
+        #    curr_seg = (segs_3d_temp == idx) * 1
         x_min, y_min, z_max, x_max, y_max, z_max = box3D
         if args.filter_background: # Omit everything outside the bbox
             outside_bbox_mask = np.zeros_like(segs_3d_temp)
             outside_bbox_mask[z_min:z_max, y_min:y_max, x_min:x_max] = 1
             # Apply the outside bounding box mask to the output mask
             if get_model(img_npz_file) == 'th':
-                curr_seg[outside_bbox_mask == 0] = 0 # for th
+                segs_3d_temp[outside_bbox_mask == 0] = 0 # for th
             else:
                 segs_3d_temp[outside_bbox_mask == 0] = 0 # for everything else
         if args.force_volume: # try to push the tumor to bbox ratio within a certain range
             if model_name == 'th':
-                ratio = np.sum(curr_seg) / box_vol(box3D)
+                ratio = np.sum(segs_3d_temp) / box_vol(box3D)
                 structuring_element = np.ones((2, 2, 2), dtype=np.uint8)
 
                 if ratio == 0.0: # initialize mask with at least one voxel
                     box_c = box_center(box3D)
-                    curr_seg[box_c[2], box_c[1], box_c[0]] = 1
+                    segs_3d_temp[box_c[2], box_c[1], box_c[0]] = 1
                 if ratio < args.lower_interval:
                     c_ratio = ratio
                     while c_ratio < args.lower_interval:
-                        curr_seg = binary_dilation(curr_seg, structure=structuring_element)
-                        c_ratio = np.sum(curr_seg / box_vol(box3D))
+                        segs_3d_temp = binary_dilation(segs_3d_temp, structure=structuring_element)
+                        c_ratio = np.sum(segs_3d_temp / box_vol(box3D))
                     if c_ratio >= 1.0:
-                        curr_seg = binary_erosion(curr_seg, structure=structuring_element)
-                        c_ratio = np.sum(curr_seg / box_vol(box3D))
+                        segs_3d_temp = binary_erosion(segs_3d_temp, structure=structuring_element)
+                        c_ratio = np.sum(segs_3d_temp / box_vol(box3D))
                     if c_ratio == 0:
                         box_c = box_center(box3D)
-                        curr_seg[box_c[2], box_c[1], box_c[0]] = 1
+                        segs_3d_temp[box_c[2], box_c[1], box_c[0]] = 1
 
                 if ratio > args.upper_interval:
                     c_ratio = ratio
                     while c_ratio > args.upper_interval:
-                        curr_seg = binary_erosion(curr_seg, structure=structuring_element)
-                        c_ratio = np.sum(curr_seg / box_vol(box3D))
+                        segs_3d_temp = binary_erosion(segs_3d_temp, structure=structuring_element)
+                        c_ratio = np.sum(segs_3d_temp / box_vol(box3D))
                     if c_ratio == 0:
                         box_c = box_center(box3D)
-                        curr_seg[box_c[2], box_c[1], box_c[0]] = 1
-        if np.sum(curr_seg > 0) / box_vol(box3D) > 1:
-            print(f'[WARNING] Segmentation bleeds out of the bounding box with a seg/bbox ratio of {np.sum(curr_seg > 0) / box_vol(box3D)}')
+                        segs_3d_temp[box_c[2], box_c[1], box_c[0]] = 1
+        #if np.sum(curr_seg > 0) / box_vol(box3D) > 1:
+        #   print(f'[WARNING] Segmentation bleeds out of the bounding box with a seg/bbox ratio of {np.sum(curr_seg > 0) / box_vol(box3D)}')
 
         if get_model(img_npz_file) == 'th':
-            segs[curr_seg > 0] = idx
+            segs[segs_3d_temp > 0] = idx
         else:
             segs[segs_3d_temp>0] = idx
     if 'gts' in npz_data.keys():
@@ -1297,7 +1309,9 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
         join(pred_save_dir, npz_name),
         segs=segs,
     )
-
+    if 'gts' in npz_data.keys():
+        dice = compute_dice((segs > 0), (npz_data['gts'] > 0))
+        print('Dice', compute_dice((segs > 0), (npz_data['gts'] > 0)))    
     # visualize image, mask and bounding box
     if save_overlay:
         idx = int(segs.shape[0] / 2)
@@ -1323,15 +1337,16 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
 def get_model(img_npz_file):
     if 'PET' in img_npz_file:
         return 'th'
-    if ('CT' in img_npz_file) or ('MR' in img_npz_file) or ('XRay' in img_npz_file) or ('CXR' in img_npz_file) or ('Fundus' in img_npz_file) or ('X-Ray' in img_npz_file) or ('Endoscopy' in img_npz_file) or ('Microscopy' in img_npz_file) or ('Microscope' in img_npz_file) or ('US' in img_npz_file):
-        return 'medsam'
-    if 'US' in img_npz_file:
-        return 'us_domain'
-    if "Fundus" in img_npz_file:
-        return 'oval'
     if "OCT" in img_npz_file:
         return 'oct_th'
-    else: # Dermoscopy, US, Mammography
+    if ('CT' in img_npz_file) or ('MR' in img_npz_file) or ('XRay' in img_npz_file) or ('CXR' in img_npz_file) or ('X-Ray' in img_npz_file) or ('Endoscopy' in img_npz_file) or ('Fundus' in img_npz_file) or ('Microscopy' in img_npz_file) or ('Microscope' in img_npz_file) or ('US' in img_npz_file):
+        return 'medsam'
+    #if 'US' in img_npz_file:
+    #    return 'us_domain'
+    #if "Fundus" in img_npz_file:
+    #    return 'oval'
+
+    else: # Dermoscopy, Mammography
         return 'mobileunet'
 
 if __name__ == '__main__':
@@ -1345,6 +1360,7 @@ if __name__ == '__main__':
     efficiency['time'] = []
     dices = []
     for img_npz_file in tqdm(img_npz_files):
+
         start_time = time()
         print('Using', get_model(img_npz_file))
         print(img_npz_file)
@@ -1359,7 +1375,6 @@ if __name__ == '__main__':
         efficiency['time'].append(end_time - start_time)
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(current_time, 'file name:', basename(img_npz_file), 'time cost:', np.round(end_time - start_time, 4))
-    #print(np.mean(dices))
 
 
     

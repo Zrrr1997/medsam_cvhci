@@ -1149,14 +1149,14 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
 
 
         for z in range(z_middle, max(z_max, z_middle+1)):
-
-            if z not in sampled_z:
-                continue
-            
             if model_name == 'th': # No slice-wise inference for thresholds
                 pred_2d = full_pred[z,:,:]
                 segs_3d_temp[z, y_min:y_max, x_min:x_max] = (pred_2d[y_min:y_max, x_min:x_max] == 1) * idx
                 continue
+            if z not in sampled_z:
+                continue
+            
+
             img_2d = img_3D[z, :, :]
 
             
@@ -1224,12 +1224,13 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
         if z_middle-1 not in sampled_z:
             sampled_z = np.append(sampled_z, z_middle-1)
         for z in range(z_middle-1, z_min, -1):
-            if z not in sampled_z:
-                continue
             if model_name == 'th': # No slice-wise inference for thresholds
                 pred_2d = full_pred[z,:,:]
                 segs_3d_temp[z, y_min:y_max, x_min:x_max] = (pred_2d[y_min:y_max, x_min:x_max] == 1) * idx
                 continue
+            if z not in sampled_z:
+                continue
+
             img_2d = img_3D[z, :, :]
             if len(img_2d.shape) == 2:
                 img_3c = np.repeat(img_2d[:, :, None], 3, axis=-1)
