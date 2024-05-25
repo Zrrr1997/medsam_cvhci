@@ -41,6 +41,8 @@ share/python-wheels/
 MANIFEST
 data_/
 overlay/
+test_demo_original/
+test_demo_original/*
 test_demo/
 work_dir/
 workdir_mobileunet/

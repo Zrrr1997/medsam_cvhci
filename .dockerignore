@@ -10,4 +10,4 @@ litemedsam-egg-info/*
 *.tar.gz
 overlay/*
 __pycache__/*
-
+test_demo_original/**/*

@@ -13,6 +13,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from datetime import datetime
+from fvcore.nn import FlopCountAnalysis
+
 
 from utils.mobileunet import MobileUNet
 
@@ -42,7 +44,7 @@ parser.add_argument(
     help="Path to the working directory where checkpoints and logs will be saved."
 )
 parser.add_argument(
-    "-num_epochs", type=int, default=10,
+    "-num_epochs", type=int, default=500,
     help="Number of epochs to train."
 )
 parser.add_argument(
@@ -109,6 +111,13 @@ parser.add_argument(
     default=False,
     action='store_true',
     help='Crop image with a random bbox to train'
+)
+
+parser.add_argument(
+    '--count_flops',
+    default=False,
+    action='store_true',
+    help='Count number of flops'
 )
 
 parser.add_argument(
@@ -454,7 +463,10 @@ for epoch in range(start_epoch + 1, num_epochs):
         optimizer.zero_grad()
         image, gt2D, boxes = image.to(device), gt2D.to(device), boxes.to(device)
         
-
+        if args.count_flops:
+            flops = FlopCountAnalysis(model, image)
+            print('flops', flops.total())
+            exit()
         logits_pred = model(image) 
         
         l_seg = seg_loss(logits_pred, gt2D)

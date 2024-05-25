@@ -8,7 +8,7 @@
 from setuptools import find_packages, setup
 
 setup(
-    name="litemedsam_zrrr",
+    name="cvhci_updated_oct",
     version="0.0.1",
     author="Jun Ma",
     python_requires=">=3.9",
