@@ -25,6 +25,8 @@ import cv2
 
 from matplotlib import pyplot as plt
 import argparse
+from carbontracker.tracker import CarbonTracker
+
 # %%
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -450,8 +452,10 @@ else:
 # %%
 train_losses = []
 fps, fns = [], []
+tracker = CarbonTracker(epochs=num_epochs)
 
 for epoch in range(start_epoch + 1, num_epochs):
+    tracker.epoch_start()
     epoch_loss = [1e10 for _ in range(len(train_loader))]
     epoch_start_time = time()
     pbar = tqdm(train_loader)
@@ -516,11 +520,14 @@ for epoch in range(start_epoch + 1, num_epochs):
         checkpoint["best_loss"] = best_loss
         torch.save(checkpoint, join(work_dir, "model_best.pth"))
 
+    tracker.epoch_end()
 
 
     # Write the loss value to TensorBoard
     writer.add_scalar('Epoch Loss', epoch_loss_reduced, global_step=epoch)  # 'global_step' is the step or epoch number
 
     # Close the writer
+tracker.stop()
+
 writer.close()
 
