@@ -1,4 +1,3 @@
-from time import time
 import os
 from os import makedirs
 from os.path import join, basename
@@ -6,8 +5,6 @@ import numpy as np
 import argparse
 from glob import glob
 from tqdm import tqdm
-
-
 
 parser = argparse.ArgumentParser()
 
@@ -507,12 +504,6 @@ def guess_ellipse(img, rect, mask):
 
     x_min, y_min, x_max, y_max = rect
     height, width = y_max - y_min, x_max - x_min
-    #fig, ax = plt.subplots()
-    #ax.imshow(mask)
-    #import matplotlib.patches as patches
-    #p = patches.Rectangle((x_min,y_min),x_max-x_min,y_max-y_min)
-    #ax.add_patch(p)
-
     
     center = (width//2+x_min,height//2 + y_min)
     axex_length = (width//2, height//2)
@@ -708,6 +699,8 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             grayscale = False
         if not two_channels and not grayscale:
             almost_grayscale = (np.mean(np.abs(img_3c[:,:,0].astype(np.int16) - img_3c[:,:,1].astype(np.int16))) > 0) and (np.mean(np.abs(img_3c[:,:,0].astype(np.int16) - img_3c[:,:,1].astype(np.int16))) <= 5)
+    #two_channels, grayscale, almost_grayscale = False, False, False
+
 
     allow_circles = False
     all_circles = 0
@@ -757,7 +750,7 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
             step_size = (x[1] - x[0]) / 2
             x = np.array([el - step_size for el in x[1:]])
 
-            new_th = GHT(n, x=x, nu=1e60, tau=1e-30)[0] + 30
+            new_th = GHT(n, x=x, nu=1e60, tau=1e-30)[0]# + 30
             
             my_model_mask = np.zeros((img_3c.shape[0], img_3c.shape[1])).astype(np.uint8)
             my_model_mask[y_min:y_max, x_min:x_max] = (img_gs[y_min:y_max, x_min:x_max] < new_th).astype(np.uint8)
@@ -902,9 +895,9 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
                 my_model_mask[outside_bbox_mask == 0] = 0 # for everything else
             segs[my_model_mask>0] = idx
 
-    #if 'gts' in npz_data.keys():
-    #    dice = compute_dice((segs > 0), (npz_data['gts'] > 0))
-    #    print('Dice', compute_dice((segs > 0), (npz_data['gts'] > 0)))    
+    if 'gts' in npz_data.keys():
+        dice = compute_dice((segs > 0), (npz_data['gts'] > 0))
+        print('Dice', compute_dice((segs > 0), (npz_data['gts'] > 0)))    
     np.savez_compressed(
         join(pred_save_dir, npz_name),
         segs=segs,
@@ -913,17 +906,17 @@ def my_model_infer_npz_2D(img_npz_file, model_name):
     if save_overlay:
         from matplotlib import pyplot as plt
 
-        _, ax = plt.subplots(1, 2, figsize=(15, 5))
+        _, ax = plt.subplots(1, 3, figsize=(15, 5))
         ax[0].imshow(img_3c)
         ax[1].imshow(segs)
-        #ax[2].imshow(gts)
+        ax[2].imshow(gts)
         ax[0].set_title("Image")
-        ax[1].set_title("my_model Segmentation")
-        #ax[2].set_title("GT")
+        ax[1].set_title("Our Segmentation")
+        ax[2].set_title("GT")
         ax[0].axis('off')
         ax[1].axis('off')
         #
-        # ax[2].axis('off')
+        ax[2].axis('off')
         '''
         for i, box in enumerate(boxes):
             color = np.random.rand(3)
@@ -1321,13 +1314,19 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
         idx = int(segs.shape[0] / 2)
 
         idx = int(z_min + ((z_max - z_min) / 2))
-        fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+        fig, ax = plt.subplots(1, 3, figsize=(10, 5))
         ax[0].imshow(img_3D[idx], cmap='gray')
         ax[1].imshow(np.zeros_like(img_3D[idx]), cmap='gray')
+        ax[2].imshow(np.zeros_like(img_3D[idx]), cmap='gray')
+
         ax[0].set_title("Image")
         ax[1].set_title("my_model Segmentation")
         ax[0].axis('off')
         ax[1].axis('off')
+
+
+        ax[2].set_title("GT")
+
         for i, box3D in enumerate(boxes_3D, start=1):
 
             if np.sum(segs[idx]==i) > 0: # predictions in the middle slice
@@ -1336,6 +1335,10 @@ def my_model_infer_npz_3D(img_npz_file, model_name):
                 box_viz = np.array([x_min, y_min, x_max, y_max])
                 #show_box(box_viz, ax[1], edgecolor=color)
                 show_mask(segs[idx]==i, ax[1], mask_color=color)
+
+                show_mask(gts[idx]==i, ax[2], mask_color=color)
+
+
 
         plt.tight_layout()
         plt.savefig(join(png_save_dir, npz_name.split(".")[0] + '.png'), dpi=300)
@@ -1348,12 +1351,6 @@ def get_model(img_npz_file):
         return 'oct_th'
     if ('CT' in img_npz_file) or ('MR' in img_npz_file) or ('XRay' in img_npz_file) or ('CXR' in img_npz_file) or ('Fundus' in img_npz_file) or ('X-Ray' in img_npz_file) or ('Endoscopy' in img_npz_file) or ('Microscopy' in img_npz_file) or ('Microscope' in img_npz_file) or ('US' in img_npz_file):
         return 'medsam'
-
-    #if 'US' in img_npz_file:
-    #    return 'us_domain'
-    #if "Fundus" in img_npz_file:
-    #    return 'oval'
-
     else: # Dermoscopy, Mammography 
         return 'mobileunet'
 
@@ -1361,17 +1358,12 @@ if __name__ == '__main__':
     img_npz_files = sorted(glob(join(data_root, '*.npz'), recursive=True))
     all_files = len(img_npz_files)
 
-    #img_npz_files = [el for el in img_npz_files if '2D' in el and 'Mamm' in el]
-
     dices = []
     for img_npz_file in tqdm(img_npz_files):
-
         if basename(img_npz_file).startswith('3D') or basename(img_npz_file).startswith('CT') or basename(img_npz_file).startswith('MR') or basename(img_npz_file).startswith('PET'):
             my_model_infer_npz_3D(img_npz_file, get_model(img_npz_file))
         else:
             my_model_infer_npz_2D(img_npz_file, get_model(img_npz_file))
-    #print(np.mean(dices))
-
 
 
     '''

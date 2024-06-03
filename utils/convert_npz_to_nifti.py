@@ -17,7 +17,7 @@ parser.add_argument(
     help='path to nifti file',
 )
 args = parser.parse_args()
-seg = np.load(args.input_npz)['segs'].astype(np.uint8) * 255
+seg = np.load(args.input_npz)['imgs'].astype(np.uint8) * 255
 affine = np.eye(4)
 affine[0][0] = -1
 ni_img = nib.Nifti1Image(seg, affine=affine)
